@@ -85,6 +85,22 @@ typedef struct {
 // know whether it has a tile to draw, not why it doesn't.
 bool nav_tile_load(uint8_t zoom, uint32_t tileX, uint32_t tileY, NavTileData *out);
 
+// Standard OSM/Google "slippy map" tile <-> lat/lon conversions (Web
+// Mercator) - pure math, no SD access. Kept here rather than in
+// ui_navScreen.c since they're defined in terms of this format's own tile
+// numbering/NAV_TILE_EXTENT convention, not renderer-specific.
+//
+// nav_latlon_to_tile: which absolute tile (at the given zoom) contains a
+// GPS fix - used to decide which tile to nav_tile_load().
+// nav_tile_local_to_latlon: the inverse, from one feature vertex's 0-4096
+// local-tile-space coordinate back to real lat/lon - used to project
+// loaded tile geometry into the same lat/lon space ui_navScreen.c's
+// breadcrumb trail already projects onto the canvas, so both draw
+// consistently off one projection.
+void nav_latlon_to_tile(uint8_t zoom, double lat, double lon, uint32_t *tileX, uint32_t *tileY);
+void nav_tile_local_to_latlon(uint8_t zoom, uint32_t tileX, uint32_t tileY,
+                               int16_t localX, int16_t localY, double *lat, double *lon);
+
 #ifdef __cplusplus
 }
 #endif

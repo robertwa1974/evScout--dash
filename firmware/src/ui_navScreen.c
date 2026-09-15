@@ -33,11 +33,15 @@
 // ============================================================================
 
 #include "ui.h"
+#include "nav_tile_reader.h"
 #include <math.h>
 
 lv_obj_t * ui_navScreen = NULL;
 
 static lv_obj_t * ui_navCanvas = NULL;
+static lv_obj_t * ui_navTileLayer = NULL;  // map geometry - created before
+                                             // the trail/here-dot below so
+                                             // they always draw on top of it
 static lv_obj_t * ui_navTrailLine = NULL;
 static lv_obj_t * ui_navHereDot = NULL;
 static lv_obj_t * ui_navStrip = NULL;
@@ -61,6 +65,170 @@ static int trailCount = 0;   // number of valid entries, caps at TRAIL_MAX_POINT
 static int trailHead = 0;    // index the NEXT point will be written to
 
 static lv_point_t trailScreenPoints[TRAIL_MAX_POINTS];
+
+// --- NAV vector tile rendering ---
+// Draws whatever tile currently covers the vehicle's position, reusing
+// this file's existing flat-earth-meters projection (see header comment)
+// for tile geometry too, so the trail and the map draw in the exact same
+// coordinate system. Deliberately simple for a first pass: only the
+// fixture's line/polygon/text/point feature kinds are handled, only a
+// polygon's OUTER ring is drawn (no holes), and no de-dup/LOD by minZoom -
+// see nav_tile_reader.h's own caps-are-a-guess note, same "buildable now,
+// revisit once real Tile-Generator output exists" spirit.
+#define NAV_TILE_ZOOM 16  // matches firmware/assets/gen_nav_fixture.py's
+                           // fixture; real map data should target this
+                           // zoom too until there's a reason to vary it
+
+static NavTileData currentTile;  // ~12KB - static, never a stack local
+                                   // (see nav_tile_reader.h)
+static bool tileLoaded = false;
+static uint32_t loadedTileX = 0, loadedTileY = 0;
+
+static lv_obj_t * tileFeatureObjs[NAV_MAX_FEATURES_PER_TILE];
+// +1 per feature so a closed polygon ring can repeat its first vertex.
+static lv_point_t tileFeaturePoints[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
+
+// RGB565 -> lv_color_t without assuming lv_color_t's internal union layout
+// (LV_COLOR_DEPTH is 16 per include/lv_conf.h, but going through
+// lv_color_make() rather than poking a union member keeps this correct
+// even if that ever changes).
+static lv_color_t navFeatureColor(uint16_t rgb565) {
+    uint8_t r5 = (rgb565 >> 11) & 0x1F;
+    uint8_t g6 = (rgb565 >> 5) & 0x3F;
+    uint8_t b5 = rgb565 & 0x1F;
+    return lv_color_make((r5 * 527 + 23) >> 6, (g6 * 259 + 33) >> 6, (b5 * 527 + 23) >> 6);
+}
+
+static void clearTileLayer(void) {
+    for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) {
+        if (tileFeatureObjs[i]) {
+            lv_obj_del(tileFeatureObjs[i]);
+            tileFeatureObjs[i] = NULL;
+        }
+    }
+}
+
+// Creates one LVGL object per decoded feature in currentTile - called only
+// when the vehicle crosses into a different tile (i.e. after a fresh
+// nav_tile_load()), not on every GPS fix. Screen position isn't set here;
+// repositionTileLayer() does that every fix, same split as the trail's
+// addPoint()/redrawTrail().
+static void buildTileLayer(void) {
+    for (uint16_t i = 0; i < currentTile.featureCount; i++) {
+        NavFeature *f = &currentTile.features[i];
+        lv_color_t color = navFeatureColor(f->colorRgb565);
+
+        if (f->geomType == NAV_GEOM_TEXT) {
+            lv_obj_t * label = lv_label_create(ui_navTileLayer);
+            lv_label_set_text(label, f->text);
+            lv_obj_set_style_text_color(label, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(label, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+            if (f->shieldBgRgb565 != 0) {
+                lv_obj_set_style_bg_color(label, navFeatureColor(f->shieldBgRgb565), LV_PART_MAIN | LV_STATE_DEFAULT);
+                lv_obj_set_style_bg_opa(label, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+                lv_obj_set_style_border_color(label, navFeatureColor(f->shieldBorderRgb565), LV_PART_MAIN | LV_STATE_DEFAULT);
+                lv_obj_set_style_border_width(label, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+                lv_obj_set_style_pad_all(label, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+            }
+            tileFeatureObjs[i] = label;
+        } else if (f->geomType == NAV_GEOM_POINT) {
+            lv_obj_t * dot = lv_obj_create(ui_navTileLayer);
+            lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_size(dot, 8, 8);
+            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(dot, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(dot, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            tileFeatureObjs[i] = dot;
+        } else {
+            // LINESTRING or POLYGON (outer ring only - see file header).
+            lv_obj_t * line = lv_line_create(ui_navTileLayer);
+            lv_obj_set_size(line, CANVAS_W, CANVAS_H);
+            lv_obj_set_pos(line, 0, 0);
+            uint8_t px = f->widthPx / 2;  // widthPx is in 0.5px units (nav_tile_format.h)
+            lv_obj_set_style_line_width(line, px > 0 ? px : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_line_rounded(line, true, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_line_color(line, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+            tileFeatureObjs[i] = line;
+        }
+    }
+}
+
+// Recomputes every active tile feature's screen position relative to the
+// CURRENT fix, exactly like redrawTrail() does for the breadcrumb trail -
+// called every GPS fix (not just on tile reload) so map geometry stays
+// centered as the vehicle moves, even between tile crossings.
+static void repositionTileLayer(double curLat, double curLon, double cosLat) {
+    int cx = CANVAS_W / 2;
+    int cy = CANVAS_H / 2;
+
+    for (uint16_t i = 0; i < currentTile.featureCount; i++) {
+        lv_obj_t * obj = tileFeatureObjs[i];
+        if (!obj) continue;
+        NavFeature *f = &currentTile.features[i];
+
+        if (f->geomType == NAV_GEOM_TEXT || f->geomType == NAV_GEOM_POINT) {
+            int16_t lx = (f->geomType == NAV_GEOM_TEXT) ? f->textX : f->vx[0];
+            int16_t ly = (f->geomType == NAV_GEOM_TEXT) ? f->textY : f->vy[0];
+            double lat, lon;
+            nav_tile_local_to_latlon(NAV_TILE_ZOOM, currentTile.tileX, currentTile.tileY, lx, ly, &lat, &lon);
+            double metersNorth = (lat - curLat) * METERS_PER_DEG_LAT;
+            double metersEast  = (lon - curLon) * METERS_PER_DEG_LAT * cosLat;
+            lv_coord_t x = (lv_coord_t)(cx + metersEast / METERS_PER_PIXEL);
+            lv_coord_t y = (lv_coord_t)(cy - metersNorth / METERS_PER_PIXEL);
+            // Anchor at top-left rather than centering on the label/dot's
+            // own size - close enough for a first pass, avoids a
+            // lv_obj_get_size() round-trip per feature per fix.
+            lv_obj_set_pos(obj, x, y);
+        } else {
+            uint16_t vertCount = f->vertexCount;
+            bool closeLoop = (f->geomType == NAV_GEOM_POLYGON);
+            if (closeLoop) {
+                // Outer ring only: ringEnds[0] is its vertex count (see
+                // nav_tile_format.h's cumulative-ring-end encoding).
+                vertCount = (f->ringCount > 0 && f->ringEnds[0] <= f->vertexCount) ? f->ringEnds[0] : f->vertexCount;
+            }
+            for (uint16_t v = 0; v < vertCount; v++) {
+                double lat, lon;
+                nav_tile_local_to_latlon(NAV_TILE_ZOOM, currentTile.tileX, currentTile.tileY, f->vx[v], f->vy[v], &lat, &lon);
+                double metersNorth = (lat - curLat) * METERS_PER_DEG_LAT;
+                double metersEast  = (lon - curLon) * METERS_PER_DEG_LAT * cosLat;
+                tileFeaturePoints[i][v].x = (lv_coord_t)(cx + metersEast / METERS_PER_PIXEL);
+                tileFeaturePoints[i][v].y = (lv_coord_t)(cy - metersNorth / METERS_PER_PIXEL);
+            }
+            if (closeLoop && vertCount > 0 && vertCount < NAV_MAX_VERTICES_PER_FEATURE + 1) {
+                tileFeaturePoints[i][vertCount] = tileFeaturePoints[i][0];
+                vertCount++;
+            }
+            lv_line_set_points(obj, tileFeaturePoints[i], vertCount);
+        }
+    }
+}
+
+// Loads whichever tile now covers (lat, lon), only when that's actually a
+// different tile than what's already loaded/built - SD reads only happen
+// on a tile crossing, not every fix. Rebuilding the LVGL objects happens
+// here too since the feature set (and therefore how many/what kind of
+// objects are needed) only changes when the tile does.
+static void updateNavTile(double lat, double lon) {
+    uint32_t tx, ty;
+    nav_latlon_to_tile(NAV_TILE_ZOOM, lat, lon, &tx, &ty);
+
+    if (tileLoaded && tx == loadedTileX && ty == loadedTileY) return;
+
+    loadedTileX = tx;
+    loadedTileY = ty;
+    clearTileLayer();
+
+    bool ok = nav_tile_load(NAV_TILE_ZOOM, tx, ty, &currentTile);
+    tileLoaded = ok;
+    if (ok) {
+        buildTileLayer();
+        if (ui_navScaleLabel) lv_label_set_text_fmt(ui_navScaleLabel, "~%.0fm across", CANVAS_W * METERS_PER_PIXEL);
+    } else if (ui_navScaleLabel) {
+        lv_label_set_text_fmt(ui_navScaleLabel, "~%.0fm across - no map tiles yet", CANVAS_W * METERS_PER_PIXEL);
+    }
+}
 
 void ui_event_navScreen(lv_event_t * e)
 {
@@ -115,6 +283,11 @@ void ui_navScreen_addPoint(double lat, double lon) {
     if (trailCount < TRAIL_MAX_POINTS) trailCount++;
 
     redrawTrail();
+
+    // Map tile layer: reload only on a tile crossing (cheap check, rare SD
+    // read), reposition every fix so it stays centered like the trail.
+    updateNavTile(lat, lon);
+    repositionTileLayer(lat, lon, cos(lat * M_PI / 180.0));
 }
 
 void ui_navScreen_screen_init(void)
@@ -134,6 +307,21 @@ void ui_navScreen_screen_init(void)
     lv_obj_set_style_border_width(ui_navCanvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(ui_navCanvas, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_navCanvas, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    // Map geometry layer - created before the trail/here-dot below so
+    // those always draw on top of it, regardless of when tiles get
+    // (re)loaded later. Transparent so the canvas bg shows through where
+    // there's no tile data (or no card).
+    ui_navTileLayer = lv_obj_create(ui_navCanvas);
+    lv_obj_clear_flag(ui_navTileLayer, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(ui_navTileLayer, CANVAS_W, CANVAS_H);
+    lv_obj_set_pos(ui_navTileLayer, 0, 0);
+    lv_obj_set_style_pad_all(ui_navTileLayer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(ui_navTileLayer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui_navTileLayer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_navTileLayer, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
+    for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) tileFeatureObjs[i] = NULL;
+    tileLoaded = false;
 
     ui_navTrailLine = lv_line_create(ui_navCanvas);
     lv_obj_set_size(ui_navTrailLine, CANVAS_W, CANVAS_H);
@@ -210,10 +398,12 @@ void ui_navScreen_refresh_theme(void)
 
 void ui_navScreen_screen_destroy(void)
 {
-    if (ui_navScreen) lv_obj_del(ui_navScreen);
+    if (ui_navScreen) lv_obj_del(ui_navScreen);  // recursively deletes ui_navTileLayer
+                                                   // and every feature object under it too
 
     ui_navScreen = NULL;
     ui_navCanvas = NULL;
+    ui_navTileLayer = NULL;
     ui_navTrailLine = NULL;
     ui_navHereDot = NULL;
     ui_navStrip = NULL;
@@ -223,4 +413,10 @@ void ui_navScreen_screen_destroy(void)
     ui_navScaleLabel = NULL;
     trailCount = 0;
     trailHead = 0;
+
+    // Feature objects were just deleted along with ui_navTileLayer above -
+    // drop the now-dangling pointers and force a fresh nav_tile_load() +
+    // rebuild next time the screen is opened, even at the same position.
+    for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) tileFeatureObjs[i] = NULL;
+    tileLoaded = false;
 }

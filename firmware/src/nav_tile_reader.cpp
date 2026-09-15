@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <SD.h>
 #include <string.h>
+#include <math.h>
 
 // See nav_tile_format.h for the verified on-disk byte layout this parses.
 // Streams directly from the open SD File rather than reading a whole tile
@@ -209,4 +210,24 @@ bool nav_tile_load(uint8_t zoom, uint32_t tileX, uint32_t tileY, NavTileData *ou
 
     f.close();
     return true;
+}
+
+// Standard slippy-map formulas (see e.g. the OSM wiki's "Slippy map
+// tilenames" page) - Web Mercator, good to well under 1% error at driving
+// latitudes, same "simple, sanity-checked, not aerospace-grade" bar as
+// ui_navScreen.c's own flat-earth trail projection.
+void nav_latlon_to_tile(uint8_t zoom, double lat, double lon, uint32_t *tileX, uint32_t *tileY) {
+    double n = (double)(1u << zoom);
+    double latRad = lat * M_PI / 180.0;
+    *tileX = (uint32_t)((lon + 180.0) / 360.0 * n);
+    *tileY = (uint32_t)((1.0 - asinh(tan(latRad)) / M_PI) / 2.0 * n);
+}
+
+void nav_tile_local_to_latlon(uint8_t zoom, uint32_t tileX, uint32_t tileY,
+                               int16_t localX, int16_t localY, double *lat, double *lon) {
+    double n = (double)(1u << zoom);
+    double xFrac = (tileX + (double)localX / NAV_TILE_EXTENT) / n;
+    double yFrac = (tileY + (double)localY / NAV_TILE_EXTENT) / n;
+    *lon = xFrac * 360.0 - 180.0;
+    *lat = atan(sinh(M_PI * (1.0 - 2.0 * yFrac))) * 180.0 / M_PI;
 }

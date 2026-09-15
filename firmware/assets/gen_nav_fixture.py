@@ -34,8 +34,14 @@ OUT = HERE / "fixtures" / "Z16.nav"
 OUT.parent.mkdir(exist_ok=True)
 
 ZOOM = 16
-TILE_X = 100
-TILE_Y = 100
+# Deliberately matches the tile that actually covers [env:mock-gps]'s canned
+# route (gps_mock_source.cpp's MOCK_BASE_LAT/LON, 40.0000/-75.0000) at this
+# zoom, not an arbitrary number - lets ui_navScreen.c's tile renderer be
+# visually verified on real hardware against the mock route before any real
+# Tile-Generator output exists (computed via the same slippy-map formula as
+# nav_tile_reader.cpp's nav_latlon_to_tile(), not guessed).
+TILE_X = 19114
+TILE_Y = 24810
 GEOM_LINESTRING = 2
 GEOM_POLYGON = 3
 GEOM_TEXT = 4
@@ -118,7 +124,12 @@ def encode_text_feature(color_index, min_zoom, priority, font_size, x, y, text,
 
 
 def build():
-    palette = [0xF800, 0x07E0, 0x0000]  # red, green, black (RGB565)
+    # red, green, white (RGB565) - white, not black, for the text label:
+    # this dash's theme (ui_theme.cpp) uses near-black panel backgrounds
+    # (0x262626 day / 0x0D0D0D night) for the NAV canvas, so black text
+    # would have rendered but been visually unreadable - discovered by
+    # checking real hardware, not assumed (see waveshare-dash-build.md).
+    palette = [0xF800, 0x07E0, 0xFFFF]
 
     line = encode_geometry_feature(
         GEOM_LINESTRING, color_index=0, min_zoom=10, priority=8, width_flags=3,

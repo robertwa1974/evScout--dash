@@ -225,10 +225,11 @@ confirmed against Waveshare's own official example
   `ui_navScreen.c`), not yet tuned against a real driving route. This is
   NOT the full offline tile map from the original plan — that still needs
   real map tile data for wherever this vehicle drives (a data-acquisition
-  decision, still pending), though the SD card itself now mounts (see
-  `sd_driver.h`) and a NAV vector tile parser exists (see "Map tile format"
-  below) — rendering that data onto this screen's canvas is a separate,
-  still-deferred piece.
+  decision, still pending). The SD card mounts (see `sd_driver.h`), a NAV
+  vector tile parser exists, and (2026-09-15) it's now rendered onto this
+  screen too — see "Map tile format" below for the rendering pass. Still
+  bottlenecked on real Tile-Generator output; verified so far only against
+  `firmware/assets/gen_nav_fixture.py`'s synthetic 3-feature fixture.
 
 ## Map tile format (NAV vector tiles, not PNG raster)
 
@@ -258,8 +259,25 @@ story). Key facts, so nobody re-derives them from scratch:
   tiny 3-feature test fixture, and `test/test_nav_tile/` is an on-device
   test against it (needs the SD card + that fixture copied to its
   `/maps/Z16.nav` to actually run).
-- Rendering `NavTileData` onto `ui_navScreen.c`'s canvas is NOT built yet
-  — this pass was the data format and parsing layer only.
+- **Rendering pass (2026-09-15)**: `ui_navScreen.c` now draws whatever
+  tile currently covers the vehicle's position — reuses the same
+  flat-earth-meters projection the breadcrumb trail already uses (new
+  `nav_latlon_to_tile()`/`nav_tile_local_to_latlon()` in
+  `nav_tile_reader.{h,cpp}` convert between GPS lat/lon and this format's
+  absolute tile numbers / 0-4096 local-tile-space, standard Web Mercator
+  slippy-map math). SD reads (`nav_tile_load()`) only happen on a tile
+  crossing, not every GPS fix; repositioning the already-built LVGL
+  objects happens every fix, same split as the trail's own
+  addPoint()/redrawTrail(). Deliberately simple for a first pass: only a
+  polygon's outer ring is drawn (no holes), no LOD/priority filtering by
+  `minZoom`. Verified on real hardware via `[env:mock-gps]` — required
+  regenerating `gen_nav_fixture.py`'s tile to actually sit under the mock
+  route's canned coordinates (an arbitrary tile number doesn't overlap a
+  real GPS position by chance) and swapping its text-label color from
+  black to white (black was legible in isolation but invisible against
+  this theme's near-black panel background — see `ui_theme.cpp`'s
+  `panelBg` — a real bug the fixture had been masking since nothing had
+  ever rendered it on-screen before).
 - **Splash/clock** (built 2026-09-14, `ui_splashScreen.{h,c}`):
   deliberately simple — the real Scout wordmark (`img_scout_logo.c/.h`,
   converted from `firmware/assets/SCOUT.png` by `firmware/assets/

@@ -21,6 +21,7 @@
 // can't run as a host/native binary either).
 #include <Arduino.h>
 #include <unity.h>
+#include <SD.h>
 #include "display_driver.h"
 #include "sd_driver.h"
 #include "nav_tile_reader.h"
@@ -36,8 +37,38 @@ void test_sd_card_mounts(void) {
         "(see this file's SETUP REQUIRED comment) before running this test.");
 }
 
+// Reads the palette directly off the card, bypassing nav_tile_load()
+// entirely - added after a real incident (2026-09-15) where a Windows-side
+// Copy-Item + immediate Get-FileHash reported a successful write, but the
+// OS write-cache hadn't actually flushed to the physical card before it
+// was pulled and moved to the board - nav_tile_load() then decoded a
+// stale/older file perfectly correctly, which looked exactly like a
+// decoder bug (one color came back wrong) until this test's independent,
+// on-device-only read path proved the card's actual bytes were the ones
+// at fault, not the parser. Keep this rather than trusting a host-side
+// hash check alone next time the fixture changes.
+void test_raw_palette_bytes_on_card(void) {
+    File f = SD.open("/maps/Z16.nav", FILE_READ);
+    TEST_ASSERT_TRUE_MESSAGE(f, "couldn't open /maps/Z16.nav directly");
+    TEST_ASSERT_TRUE_MESSAGE(f.seek(31), "seek to palette offset 31 failed");
+    uint8_t b[6];
+    TEST_ASSERT_EQUAL_MESSAGE(6, f.read(b, 6), "short read of palette bytes");
+    f.close();
+    uint16_t p0 = (uint16_t)b[0] | ((uint16_t)b[1] << 8);
+    uint16_t p1 = (uint16_t)b[2] | ((uint16_t)b[3] << 8);
+    uint16_t p2 = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
+    TEST_ASSERT_EQUAL_HEX16(0xF800, p0);
+    TEST_ASSERT_EQUAL_HEX16(0x07E0, p1);
+    TEST_ASSERT_EQUAL_HEX16(0xFFFF, p2);
+}
+
 void test_fixture_tile_loads(void) {
-    bool ok = nav_tile_load(16, 100, 100, &tile);
+    // (19114, 24810) matches gen_nav_fixture.py's TILE_X/TILE_Y - deliberately
+    // the real tile covering [env:mock-gps]'s canned route (40.0000/-75.0000
+    // at zoom 16), not an arbitrary number, so the fixture can be visually
+    // verified against the mock route on real hardware too (see CLAUDE.md's
+    // "Map tile format" section).
+    bool ok = nav_tile_load(16, 19114, 24810, &tile);
     TEST_ASSERT_TRUE_MESSAGE(ok, "nav_tile_load failed - check /maps/Z16.nav exists on the card");
     TEST_ASSERT_FALSE(tile.truncated);
     TEST_ASSERT_EQUAL_UINT16(3, tile.featureCount);
@@ -49,7 +80,7 @@ static NavTileData otherTile;  // ~12KB - static, never a stack local (see nav_t
                                 // serial output ever reaching UNITY_BEGIN()
 
 void test_out_of_bounds_tile_is_absent(void) {
-    // Fixture's bounding box is exactly 1 tile at (100,100) - anything
+    // Fixture's bounding box is exactly 1 tile at (19114, 24810) - anything
     // else must cleanly report "not found," not garbage or a crash.
     bool ok = nav_tile_load(16, 999, 999, &otherTile);
     TEST_ASSERT_FALSE(ok);
@@ -88,7 +119,8 @@ void test_text_feature_decodes_correctly(void) {
     TEST_ASSERT_EQUAL_INT16(700, f.textY);
     TEST_ASSERT_EQUAL_UINT8(4, f.textLen);
     TEST_ASSERT_EQUAL_STRING("TEST", f.text);
-    TEST_ASSERT_EQUAL_UINT16(0x0000, f.colorRgb565);  // palette[2] = black
+    TEST_ASSERT_EQUAL_UINT16(0xFFFF, f.colorRgb565);  // palette[2] = white (not black -
+                                                        // see gen_nav_fixture.py's comment)
     TEST_ASSERT_EQUAL_UINT16(0, f.shieldBgRgb565);    // fixture has no shield
 }
 
@@ -106,6 +138,7 @@ void setup() {
 
     UNITY_BEGIN();
     RUN_TEST(test_sd_card_mounts);
+    RUN_TEST(test_raw_palette_bytes_on_card);
     RUN_TEST(test_fixture_tile_loads);
     RUN_TEST(test_out_of_bounds_tile_is_absent);
     RUN_TEST(test_line_feature_decodes_correctly);
