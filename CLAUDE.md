@@ -223,13 +223,14 @@ confirmed against Waveshare's own official example
   see `ui_navScreen.c`'s header comment for the projection formula and
   its accuracy tradeoff). Fixed scale (`METERS_PER_PIXEL` in
   `ui_navScreen.c`), not yet tuned against a real driving route. This is
-  NOT the full offline tile map from the original plan — that still needs
-  real map tile data for wherever this vehicle drives (a data-acquisition
-  decision, still pending). The SD card mounts (see `sd_driver.h`), a NAV
-  vector tile parser exists, and (2026-09-15) it's now rendered onto this
-  screen too — see "Map tile format" below for the rendering pass. Still
-  bottlenecked on real Tile-Generator output; verified so far only against
-  `firmware/assets/gen_nav_fixture.py`'s synthetic 3-feature fixture.
+  NOT the full offline tile map from the original plan, but as of
+  2026-09-15 all the pieces exist: the SD card mounts (see `sd_driver.h`),
+  a NAV vector tile parser exists, it's rendered onto this screen (see
+  "Map tile format" below), and real Tile-Generator output now exists for
+  California (chosen as the vehicle's driving region), verified on real
+  hardware — see that section for how it was generated and its one real
+  operational gotcha (it lives at the same SD path the synthetic test
+  fixture uses).
 
 ## Map tile format (NAV vector tiles, not PNG raster)
 
@@ -254,11 +255,47 @@ story). Key facts, so nobody re-derives them from scratch:
   `nav_tile_load(zoom, tileX, tileY, NavTileData*)`) are the ONLY files
   that should ever need to change if the upstream format changes — no
   other code should parse NPK2/NAV1 bytes directly.
-- No real Tile-Generator output exists in this repo yet. Until it does,
-  `firmware/assets/gen_nav_fixture.py` hand-builds and self-verifies a
-  tiny 3-feature test fixture, and `test/test_nav_tile/` is an on-device
-  test against it (needs the SD card + that fixture copied to its
-  `/maps/Z16.nav` to actually run).
+- `firmware/assets/gen_nav_fixture.py` hand-builds and self-verifies a
+  tiny 3-feature synthetic test fixture (not real map data), and
+  `test/test_nav_tile/` is an on-device test against it (needs the SD
+  card + that fixture copied to its `/maps/Z16.nav` to actually run).
+- **Real Tile-Generator output (2026-09-15)**: generated for California
+  (the vehicle's driving region) from `jgauchia/Tile-Generator` pinned to
+  `v.0.9.0`, zoom 16 only (matching `NAV_TILE_ZOOM` in `ui_navScreen.c` —
+  no other zoom is loaded by anything yet), against the Geofabrik
+  `california-latest.osm.pbf` extract (~1.3GB PBF in, ~1.3GB `Z16.nav`
+  out, 2,440,227 of 7,267,043 possible zoom-16 tiles populated). Verified
+  on real hardware: `nav_tile_load()` finds and decodes San Francisco's
+  tile with a nonzero feature count off the actual card.
+  - Tile-Generator's own build assumes a Debian/Ubuntu box (apt, WSL, or
+    similar) — this dev machine has neither WSL nor Docker and lacks
+    Administrator rights to install WSL2, so it was instead built native
+    on Windows via MSYS2 (mingw-w64 toolchain, installed via `winget`;
+    `libosmium`/`protozero` aren't packaged there so they're vendored as
+    plain header clones, not pinned to any tag since they're header-only).
+    This needed two small Windows-portability additions, NEITHER of which
+    changes Tile-Generator's actual tile-generation logic or output
+    format: (1) mingw-w64 has no `<sys/mman.h>` — the exact `mmap`/`munmap`
+    subset `src/mapped_store.hpp` uses is shimmed over
+    `CreateFileMappingA`/`MapViewOfFile`; (2) mingw-w64's `ftruncate()`
+    wraps the 32-bit `_chsize()`, which silently fails past ~2GB — never
+    hit by the small Andorra smoke-test extract, but California's much
+    larger dataset needs more scratch space than that, so
+    `mapped_store.hpp` redirects `ftruncate` to `_chsize_s` (real 64-bit)
+    on Windows only. Neither patch lives in this repo (they're local-only
+    changes to a separate clone outside it) — if Tile-Generator is ever
+    rebuilt from scratch on Windows, both will be needed again.
+  - **Operational gotcha, not a bug**: the real `Z16.nav` and the
+    synthetic test fixture both want the SD card's `/maps/Z16.nav` path.
+    Writing real map data there means `test_nav_tile` will fail against
+    it (wrong tile numbers, wrong feature content) until the small
+    fixture is copied back for testing — same "swap before/after" pattern
+    already established for `[env:mock-gps]` vs. the shipping build.
+  - Only zoom 16 was generated — no LOD/zoom-out yet, matching
+    `ui_navScreen.c`'s renderer, which also only loads one zoom.
+    Regenerating at additional zooms (or other states/regions) reuses the
+    same local Tile-Generator build; only the `--zoom`/input-PBF choice
+    changes.
 - **Rendering pass (2026-09-15)**: `ui_navScreen.c` now draws whatever
   tile currently covers the vehicle's position — reuses the same
   flat-earth-meters projection the breadcrumb trail already uses (new
