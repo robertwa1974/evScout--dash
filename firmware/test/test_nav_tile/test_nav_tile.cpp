@@ -1,18 +1,20 @@
 // On-device test for nav_tile_reader.cpp against the hand-built fixture
 // from firmware/assets/gen_nav_fixture.py (2026-09-14). CANNOT run until
 // the SD card physically exists (arriving 2026-09-15) with that fixture
-// copied onto it at /maps/Z16.nav - see "SETUP REQUIRED" below. The
-// Python script already round-trip-verified this exact fixture
-// independently (encode then decode from the spec, not from this file's
-// logic) before this test was written - this test is the second,
-// independent confirmation that the REAL C++ parser reads the same bytes
-// the same way, which the Python self-check alone can't prove.
+// copied onto it at /maps/Z16_r387_c298.nav (regional filename, not a flat
+// /maps/Z16.nav - see nav_tile_format.h's NAV_REGION_TILES comment for
+// why, added 2026-09-15) - see "SETUP REQUIRED" below. The Python script
+// already round-trip-verified this exact fixture independently (encode
+// then decode from the spec, not from this file's logic) before this
+// test was written - this test is the second, independent confirmation
+// that the REAL C++ parser reads the same bytes the same way, which the
+// Python self-check alone can't prove.
 //
 // SETUP REQUIRED before running:
 //   1. python firmware/assets/gen_nav_fixture.py  (writes
-//      firmware/assets/fixtures/Z16.nav if not already present)
-//   2. Copy that file to the microSD card's /maps/Z16.nav (create the
-//      /maps directory if needed)
+//      firmware/assets/fixtures/Z16_r387_c298.nav if not already present)
+//   2. Copy that file to the microSD card's /maps/Z16_r387_c298.nav
+//      (create the /maps directory if needed)
 //   3. Insert the card, then:
 //        pio test -e waveshare-s3-lcd7 -f test_nav_tile
 //
@@ -33,8 +35,8 @@ void tearDown(void) {}
 
 void test_sd_card_mounts(void) {
     TEST_ASSERT_TRUE_MESSAGE(sd_available(),
-        "No SD card mounted - insert one with /maps/Z16.nav copied onto it "
-        "(see this file's SETUP REQUIRED comment) before running this test.");
+        "No SD card mounted - insert one with /maps/Z16_r387_c298.nav copied "
+        "onto it (see this file's SETUP REQUIRED comment) before running this test.");
 }
 
 // Reads the palette directly off the card, bypassing nav_tile_load()
@@ -48,8 +50,8 @@ void test_sd_card_mounts(void) {
 // at fault, not the parser. Keep this rather than trusting a host-side
 // hash check alone next time the fixture changes.
 void test_raw_palette_bytes_on_card(void) {
-    File f = SD.open("/maps/Z16.nav", FILE_READ);
-    TEST_ASSERT_TRUE_MESSAGE(f, "couldn't open /maps/Z16.nav directly");
+    File f = SD.open("/maps/Z16_r387_c298.nav", FILE_READ);
+    TEST_ASSERT_TRUE_MESSAGE(f, "couldn't open /maps/Z16_r387_c298.nav directly");
     TEST_ASSERT_TRUE_MESSAGE(f.seek(31), "seek to palette offset 31 failed");
     uint8_t b[6];
     TEST_ASSERT_EQUAL_MESSAGE(6, f.read(b, 6), "short read of palette bytes");
@@ -63,13 +65,13 @@ void test_raw_palette_bytes_on_card(void) {
 }
 
 void test_fixture_tile_loads(void) {
-    // (19114, 24810) matches gen_nav_fixture.py's TILE_X/TILE_Y - deliberately
-    // the real tile covering [env:mock-gps]'s canned route (40.0000/-75.0000
-    // at zoom 16), not an arbitrary number, so the fixture can be visually
-    // verified against the mock route on real hardware too (see CLAUDE.md's
-    // "Map tile format" section).
+    // (19114, 24810) matches gen_nav_fixture.py's TILE_X/TILE_Y - a fixed
+    // Pennsylvania-area location, deliberately far from California so this
+    // synthetic fixture's regional file (Z16_r387_c298.nav) never collides
+    // with any of the real Tile-Generator regional files on the card (see
+    // nav_tile_format.h's NAV_REGION_TILES comment).
     bool ok = nav_tile_load(16, 19114, 24810, &tile);
-    TEST_ASSERT_TRUE_MESSAGE(ok, "nav_tile_load failed - check /maps/Z16.nav exists on the card");
+    TEST_ASSERT_TRUE_MESSAGE(ok, "nav_tile_load failed - check /maps/Z16_r387_c298.nav exists on the card");
     TEST_ASSERT_FALSE(tile.truncated);
     TEST_ASSERT_EQUAL_UINT16(3, tile.featureCount);
 }

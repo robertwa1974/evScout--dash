@@ -20,28 +20,37 @@ spec, not by importing/copying the C++), and asserts the recovered
 features match what was encoded - same "verify with an independent
 re-implementation before trusting it on hardware" discipline as
 preview_font.py/preview_icons.py earlier in this project. Actually running
-the real C++ parser against this fixture still requires the SD card
-(arriving 2026-09-15) with this file copied to /maps/Z16.nav.
+the real C++ parser against this fixture still requires the SD card with
+this file copied to its computed /maps/Z{zoom}_r{row}_c{col}.nav path
+(see NAV_REGION_TILES below - nav_tile_load() looks up regional files by
+name, not a flat /maps/Z16.nav, since 2026-09-15).
 
 Usage: python gen_nav_fixture.py
-Writes firmware/assets/fixtures/Z16.nav
+Writes firmware/assets/fixtures/Z16_r387_c298.nav (path printed at the end)
 """
 import struct
 from pathlib import Path
 
 HERE = Path(__file__).parent
-OUT = HERE / "fixtures" / "Z16.nav"
-OUT.parent.mkdir(exist_ok=True)
 
 ZOOM = 16
-# Deliberately matches the tile that actually covers [env:mock-gps]'s canned
-# route (gps_mock_source.cpp's MOCK_BASE_LAT/LON, 40.0000/-75.0000) at this
-# zoom, not an arbitrary number - lets ui_navScreen.c's tile renderer be
-# visually verified on real hardware against the mock route before any real
-# Tile-Generator output exists (computed via the same slippy-map formula as
-# nav_tile_reader.cpp's nav_latlon_to_tile(), not guessed).
+# A fixed, arbitrary Pennsylvania-area location - not a real address, and
+# deliberately NOT anywhere near California, so this synthetic fixture's
+# regional file (see below) never collides with any of the real
+# Tile-Generator regional files generated for California (this project's
+# actual driving region - see CLAUDE.md's "Map tile format" section).
+# [env:mock-gps]'s canned route used to sit here too (2026-09-14) but has
+# since moved to a real San Francisco location specifically so it exercises
+# real map data instead - the two no longer need to match.
 TILE_X = 19114
 TILE_Y = 24810
+
+# NAV_REGION_TILES must match nav_tile_format.h's constant of the same
+# name exactly - this fixture has to land at the same regional filename
+# nav_tile_load() will actually look for.
+NAV_REGION_TILES = 64
+OUT = HERE / "fixtures" / f"Z{ZOOM}_r{TILE_Y // NAV_REGION_TILES}_c{TILE_X // NAV_REGION_TILES}.nav"
+OUT.parent.mkdir(exist_ok=True)
 GEOM_LINESTRING = 2
 GEOM_POLYGON = 3
 GEOM_TEXT = 4

@@ -12,11 +12,18 @@
 // hardware before calling it done," which still applies even without the
 // sensor itself.
 //
-// Route: a small canned rectangular loop (roughly 400m x 250m) so the nav
+// Route: a small canned rectangular loop (roughly 500m x 440m) so the nav
 // screen's breadcrumb trail has turns to render, not just a straight line.
-// Coordinates are an arbitrary base point (not a real location) offset by
-// simple lat/lon deltas - precision doesn't matter here, only that
-// consecutive points are a plausible ~1 Hz driving cadence apart.
+// Coordinates are centered on real downtown San Francisco (Union Square
+// area, 2026-09-15 - previously an arbitrary Pennsylvania-ish point with
+// no real map data anywhere near it) so this build also exercises
+// ui_navScreen.c's NAV vector tile renderer against the real California
+// Tile-Generator output on /maps/Z16.nav (see CLAUDE.md's "Map tile
+// format" section), not just the trail line - the exact tile at this
+// base point was confirmed non-empty on real hardware before picking it.
+// Deltas below are still simple hand-picked offsets, not computed from
+// meters - precision doesn't matter here, only that consecutive points
+// are a plausible ~1 Hz driving cadence apart.
 #include "gps_driver.h"
 #include "mutex.h"
 #include <Arduino.h>
@@ -25,34 +32,32 @@ GpsData gpsData = {0};
 
 struct MockPoint { double lat, lon; float speedKph, headingDeg; };
 
-// Base point is arbitrary (not a real address) - a rectangular loop with
-// speed easing at the "corners" so it doesn't look robotic on the trail.
-#define MOCK_BASE_LAT 40.0000
-#define MOCK_BASE_LON -75.0000
-// ~1 degree latitude = 111320 m; longitude scaled by cos(lat) elsewhere,
-// but for this canned table it's simplest to just hand-pick deltas that
-// produce a visually sensible loop rather than compute them.
+// Real coordinates now (see file header) - kept as named constants since
+// gps_init()/gps_poll() below read from MOCK_ROUTE[], not these directly;
+// documents what the route is centered on.
+#define MOCK_BASE_LAT 37.77490
+#define MOCK_BASE_LON -122.41940
 static const MockPoint MOCK_ROUTE[] = {
-    {40.00000, -75.00000,  0, 0},
-    {40.00090, -75.00000, 25, 0},    // heading north, speeding up
-    {40.00180, -75.00000, 45, 0},
-    {40.00270, -75.00000, 45, 0},
-    {40.00360, -75.00000, 30, 0},
-    {40.00450, -75.00000, 15, 350},  // slowing into the corner
-    {40.00450, -75.00120, 20, 270},  // heading west
-    {40.00450, -75.00240, 40, 270},
-    {40.00450, -75.00360, 40, 270},
-    {40.00450, -75.00480, 25, 260},
-    {40.00360, -75.00500, 15, 190},  // corner
-    {40.00270, -75.00500, 30, 180},  // heading south
-    {40.00180, -75.00500, 45, 180},
-    {40.00090, -75.00500, 45, 180},
-    {40.00000, -75.00500, 20, 170},
-    {40.00000, -75.00380, 25, 90},   // corner, heading east
-    {40.00000, -75.00260, 40, 90},
-    {40.00000, -75.00140, 35, 90},
-    {40.00000, -75.00040, 15, 80},
-    {40.00000, -75.00000,  5, 45},   // back near the start
+    {37.77490, -122.41940,  0, 0},
+    {37.77580, -122.41940, 25, 0},    // heading north, speeding up
+    {37.77670, -122.41940, 45, 0},
+    {37.77760, -122.41940, 45, 0},
+    {37.77850, -122.41940, 30, 0},
+    {37.77940, -122.41940, 15, 350},  // slowing into the corner
+    {37.77940, -122.42060, 20, 270},  // heading west
+    {37.77940, -122.42180, 40, 270},
+    {37.77940, -122.42300, 40, 270},
+    {37.77940, -122.42420, 25, 260},
+    {37.77850, -122.42440, 15, 190},  // corner
+    {37.77760, -122.42440, 30, 180},  // heading south
+    {37.77670, -122.42440, 45, 180},
+    {37.77580, -122.42440, 45, 180},
+    {37.77490, -122.42440, 20, 170},
+    {37.77490, -122.42320, 25, 90},   // corner, heading east
+    {37.77490, -122.42200, 40, 90},
+    {37.77490, -122.42080, 35, 90},
+    {37.77490, -122.41980, 15, 80},
+    {37.77490, -122.41940,  5, 45},   // back near the start
 };
 #define MOCK_ROUTE_LEN (sizeof(MOCK_ROUTE) / sizeof(MOCK_ROUTE[0]))
 #define MOCK_TICK_MS 1000  // matches real GPS's ~1Hz fix cadence

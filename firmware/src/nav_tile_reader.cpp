@@ -126,8 +126,14 @@ bool nav_tile_load(uint8_t zoom, uint32_t tileX, uint32_t tileY, NavTileData *ou
     out->tileX = tileX;
     out->tileY = tileY;
 
-    char path[24];
-    snprintf(path, sizeof(path), "/maps/Z%u.nav", (unsigned)zoom);
+    // Regional filename, not a single whole-region file - see
+    // NAV_REGION_TILES's comment in nav_tile_format.h for why. row/col
+    // are computed from ABSOLUTE tile numbers, independent of any
+    // particular region file's own bottomLeftX/Y.
+    uint32_t row = tileY / NAV_REGION_TILES;
+    uint32_t col = tileX / NAV_REGION_TILES;
+    char path[48];
+    snprintf(path, sizeof(path), "/maps/Z%u_r%u_c%u.nav", (unsigned)zoom, row, col);
     File f = SD.open(path, FILE_READ);
     if (!f) return false;
 
@@ -173,8 +179,20 @@ bool nav_tile_load(uint8_t zoom, uint32_t tileX, uint32_t tileY, NavTileData *ou
     uint16_t toDecode = th.featureCount < NAV_MAX_FEATURES_PER_TILE ? th.featureCount : NAV_MAX_FEATURES_PER_TILE;
     if (th.featureCount > NAV_MAX_FEATURES_PER_TILE) out->truncated = true;
 
+    // Loop bound is toDecode, NOT th.featureCount - a real dense urban
+    // tile can report many hundreds/thousands of features even though we
+    // only ever keep the first NAV_MAX_FEATURES_PER_TILE. Continuing to
+    // parse-and-skip every feature past that cap (as an earlier version
+    // of this loop did, bounded by th.featureCount) wastes many SD reads/
+    // seeks per tile for real-world data for no benefit - the synthetic
+    // 3-feature test fixture never had enough features to expose this as
+    // slow. (This alone did NOT fix the real task-watchdog crash seen
+    // against real California data on 2026-09-15 - see
+    // ui_navScreen.h's ui_navScreen_addPoint() comment for the actual
+    // cause and fix: nav_tile_load() must never run from a Ticker
+    // callback context regardless of how fast any individual call is.)
     uint16_t decoded = 0;
-    for (uint16_t i = 0; i < th.featureCount; i++) {
+    for (uint16_t i = 0; i < toDecode; i++) {
         NavFeatureHeader fh;
         if ((size_t)f.read((uint8_t *)&fh, sizeof(fh)) != sizeof(fh)) break;
         uint64_t coordCountRaw, payloadSize;
@@ -184,26 +202,24 @@ bool nav_tile_load(uint8_t zoom, uint32_t tileX, uint32_t tileY, NavTileData *ou
         uint32_t payloadStart = f.position();
         uint32_t payloadEnd = payloadStart + (uint32_t)payloadSize;
 
-        if (i < toDecode) {
-            decodeFeature(f, fh, coordCountRaw, palette, paletteCount, &out->features[decoded], &out->truncated);
-            if (fh.geomType == NAV_GEOM_TEXT) {
-                // Shield colors, if present, sit right after the text
-                // bytes and before the zero-padding - only readable here
-                // since only the caller knows payloadEnd.
-                uint32_t pos = f.position();
-                if (payloadEnd - pos >= 4) {
-                    uint16_t bg, border;
-                    if (readU16LE(f, bg) && readU16LE(f, border)) {
-                        out->features[decoded].shieldBgRgb565 = bg;
-                        out->features[decoded].shieldBorderRgb565 = border;
-                    }
+        decodeFeature(f, fh, coordCountRaw, palette, paletteCount, &out->features[decoded], &out->truncated);
+        if (fh.geomType == NAV_GEOM_TEXT) {
+            // Shield colors, if present, sit right after the text
+            // bytes and before the zero-padding - only readable here
+            // since only the caller knows payloadEnd.
+            uint32_t pos = f.position();
+            if (payloadEnd - pos >= 4) {
+                uint16_t bg, border;
+                if (readU16LE(f, bg) && readU16LE(f, border)) {
+                    out->features[decoded].shieldBgRgb565 = bg;
+                    out->features[decoded].shieldBorderRgb565 = border;
                 }
             }
-            decoded++;
         }
+        decoded++;
+
         // Unconditional resync - correct regardless of how much of the
-        // payload decodeFeature() actually consumed (including a fully
-        // truncated/skipped feature when i >= toDecode).
+        // payload decodeFeature() actually consumed.
         f.seek(payloadEnd);
     }
     out->featureCount = decoded;

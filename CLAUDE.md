@@ -245,7 +245,13 @@ traced through — see `nav_tile_format.h`'s header comment for the full
 story). Key facts, so nobody re-derives them from scratch:
 - **One file per zoom level** (`Z{zoom}.nav`), not a z/x/y-per-tile file
   tree — a flat array index inside that one file gives O(1) tile lookup
-  by direct arithmetic, no R-tree, no per-tile file open.
+  by direct arithmetic, no R-tree, no per-tile file open. This describes
+  Tile-Generator's own output; this project further splits that single
+  file into a grid of smaller regional files before it reaches the SD
+  card (see `NAV_REGION_TILES` below, 2026-09-15) - a real large single
+  file made the Arduino ESP32 `SD` library's `seek()` too slow. Each
+  regional file is independently a full, valid instance of this same
+  one-file-per-zoom format at a smaller scale, not a different format.
 - **Text features use a different payload layout than geometry features**
   — their "coordCount" varint is a 4-byte-word padding count, not a
   vertex count. Confirmed by reading the encoder's text path completely
@@ -258,7 +264,9 @@ story). Key facts, so nobody re-derives them from scratch:
 - `firmware/assets/gen_nav_fixture.py` hand-builds and self-verifies a
   tiny 3-feature synthetic test fixture (not real map data), and
   `test/test_nav_tile/` is an on-device test against it (needs the SD
-  card + that fixture copied to its `/maps/Z16.nav` to actually run).
+  card + that fixture copied to its computed `/maps/Z{zoom}_r{row}_c{col}.nav`
+  path to actually run — see `NAV_REGION_TILES` below, added 2026-09-15;
+  it's not a flat `/maps/Z16.nav`).
 - **Real Tile-Generator output (2026-09-15)**: generated for California
   (the vehicle's driving region) from `jgauchia/Tile-Generator` pinned to
   `v.0.9.0`, zoom 16 only (matching `NAV_TILE_ZOOM` in `ui_navScreen.c` —
@@ -285,17 +293,67 @@ story). Key facts, so nobody re-derives them from scratch:
     on Windows only. Neither patch lives in this repo (they're local-only
     changes to a separate clone outside it) — if Tile-Generator is ever
     rebuilt from scratch on Windows, both will be needed again.
-  - **Operational gotcha, not a bug**: the real `Z16.nav` and the
-    synthetic test fixture both want the SD card's `/maps/Z16.nav` path.
-    Writing real map data there means `test_nav_tile` will fail against
-    it (wrong tile numbers, wrong feature content) until the small
-    fixture is copied back for testing — same "swap before/after" pattern
-    already established for `[env:mock-gps]` vs. the shipping build.
   - Only zoom 16 was generated — no LOD/zoom-out yet, matching
     `ui_navScreen.c`'s renderer, which also only loads one zoom.
     Regenerating at additional zooms (or other states/regions) reuses the
     same local Tile-Generator build; only the `--zoom`/input-PBF choice
     changes.
+- **Regional file split + the real task-watchdog crash (2026-09-15, same
+  day)**: relocating `[env:mock-gps]`'s canned route into real San
+  Francisco (to visually verify real map rendering, not just check
+  `nav_tile_load()` returns true) immediately crash-looped the board
+  every time the GPS NAV screen opened. Chased through several wrong
+  turns before finding the real cause — worth recording all of them so
+  nobody re-treads the same ground:
+  1. First suspect: the single 1.3GB `Z16.nav`'s O(distance)-ish
+     `seek()` cost on the Arduino ESP32 `SD` library — a seek ~660MB in
+     measured 9+ seconds against a ~500ms seek at 35MB. **Fix attempted**:
+     `firmware/assets`'s sibling `tilegen-build` checkout gained
+     `split_nav_file.py`, which re-packs one big `Z{zoom}.nav` into a
+     grid of smaller regional files (`Z{zoom}_r{tileY/64}_c{tileX/64}.nav`
+     — `NAV_REGION_TILES=64` in `nav_tile_format.h`, own scheme layered on
+     top of the format, NOT part of Tile-Generator itself) byte-copied
+     from the original, no re-running the generator or re-parsing feature
+     content needed. `nav_tile_reader.cpp`'s `nav_tile_load()` now builds
+     this regional filename instead of a flat `/maps/Z{zoom}.nav`. For
+     California at 64 tiles/region: 739 files, 0.01–44.6MB each. This is
+     still a real, worthwhile fix (a single huge file's seek cost is a
+     real problem at larger scales) and is kept, but **it did not fix
+     the crash** - the same watchdog trigger reproduced against a 14.5MB
+     regional file.
+  2. Second suspect: FAT32 fragmentation from deleting the old 1.3GB file
+     and writing 739 new ones into the freed space, making the new files
+     slow to open. **Ruled out**: a full reformat of the SD card (fresh,
+     empty FAT32) before recopying made no difference at all.
+  3. **Actual cause**: every single watchdog report's "Tasks currently
+     running" line showed `CPU 0: esp_timer`. `ui_navScreen_addPoint()`
+     is called from `zombie_updaters.cpp`'s `slowUpdate()`, which runs as
+     an ESP32 `Ticker` callback — i.e. from the `esp_timer` system task,
+     not a normal task. A real `nav_tile_load()` against non-trivial real
+     data takes long enough in total (several sequential SD reads/seeks,
+     each individually modest) that running it from that context starves
+     the watchdog regardless of how fast any single step is — confirmed
+     by writing an isolated on-device test that opened the exact same
+     14.5MB file from a normal task (`setup()`/`loop()`) and it returned
+     near-instantly, no contention. **Real fix**: `ui_navScreen_addPoint()`
+     no longer calls `nav_tile_load()` itself — it only records which
+     tile is needed. `ui_navScreen_processPendingTileLoad()` (new) does
+     the actual blocking work and must only ever be called from a normal
+     task; it's called from `firmware.ino`'s `loop()`, uiMutex-guarded
+     like every other LVGL touch (holding a mutex across blocking I/O
+     from a normal-priority task is safe here — a task blocked waiting
+     on it still yields, unlike the Ticker context this was moved out
+     of). Verified on real hardware: real San Francisco streets now
+     render on the GPS NAV screen with no crash, sustained.
+  - **The earlier-documented "operational gotcha" is now resolved**,
+    not just relocated: the synthetic test fixture's location was never
+    moved to San Francisco (kept at its original arbitrary Pennsylvania-
+    area coordinates, `TILE_X`/`TILE_Y` in `gen_nav_fixture.py`), and the
+    regional split means its file
+    (`firmware/assets/fixtures/Z16_r387_c298.nav`) no longer shares a
+    path with any real California regional file at all — both can sit on
+    the SD card simultaneously, no swap needed before running
+    `test_nav_tile`.
 - **Rendering pass (2026-09-15)**: `ui_navScreen.c` now draws whatever
   tile currently covers the vehicle's position — reuses the same
   flat-earth-meters projection the breadcrumb trail already uses (new

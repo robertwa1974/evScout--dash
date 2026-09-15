@@ -210,12 +210,11 @@ static void repositionTileLayer(double curLat, double curLon, double cosLat) {
 // on a tile crossing, not every fix. Rebuilding the LVGL objects happens
 // here too since the feature set (and therefore how many/what kind of
 // objects are needed) only changes when the tile does.
-static void updateNavTile(double lat, double lon) {
-    uint32_t tx, ty;
-    nav_latlon_to_tile(NAV_TILE_ZOOM, lat, lon, &tx, &ty);
-
-    if (tileLoaded && tx == loadedTileX && ty == loadedTileY) return;
-
+// Does the actual blocking work (nav_tile_load() + rebuilding LVGL
+// objects) - see ui_navScreen_processPendingTileLoad()'s header comment
+// in ui_navScreen.h for why this must never be called from
+// ui_navScreen_addPoint()/slowUpdate()'s Ticker-callback context.
+static void loadTile(uint32_t tx, uint32_t ty, double lat, double lon) {
     loadedTileX = tx;
     loadedTileY = ty;
     clearTileLayer();
@@ -228,6 +227,47 @@ static void updateNavTile(double lat, double lon) {
     } else if (ui_navScaleLabel) {
         lv_label_set_text_fmt(ui_navScaleLabel, "~%.0fm across - no map tiles yet", CANVAS_W * METERS_PER_PIXEL);
     }
+    // Reposition immediately against the fix that triggered this load,
+    // rather than waiting for the next addPoint() (~1s away at typical
+    // GPS fix rates) to see the newly loaded tile's geometry.
+    repositionTileLayer(lat, lon, cos(lat * M_PI / 180.0));
+}
+
+static bool tileLoadPending = false;
+static double pendingLat = 0, pendingLon = 0;
+
+// Cheap tile-crossing check only - never touches the SD card. See
+// ui_navScreen_addPoint()'s comment in ui_navScreen.h for the full story:
+// a real nav_tile_load() takes long enough (confirmed on real hardware
+// against real California map data, 2026-09-15) that running it from
+// slowUpdate()'s Ticker-callback context starves the watchdog. This just
+// records that a load is needed; ui_navScreen_processPendingTileLoad()
+// (called from firmware.ino's loop(), a normal task) does the real work.
+static void updateNavTile(double lat, double lon) {
+    uint32_t tx, ty;
+    nav_latlon_to_tile(NAV_TILE_ZOOM, lat, lon, &tx, &ty);
+
+    if (tileLoaded && tx == loadedTileX && ty == loadedTileY) return;
+
+    tileLoadPending = true;
+    pendingLat = lat;
+    pendingLon = lon;
+}
+
+void ui_navScreen_processPendingTileLoad(void) {
+    if (!tileLoadPending) return;
+    tileLoadPending = false;
+
+    // The screen may have been swiped away between the fix that queued
+    // this load and this loop() iteration servicing it - ui_navTileLayer
+    // (the LVGL parent buildTileLayer() creates objects under) would be
+    // NULL, same "no work for a screen nobody has opened" convention as
+    // ui_navScreen_addPoint().
+    if (!ui_navScreen) return;
+
+    uint32_t tx, ty;
+    nav_latlon_to_tile(NAV_TILE_ZOOM, pendingLat, pendingLon, &tx, &ty);
+    loadTile(tx, ty, pendingLat, pendingLon);
 }
 
 void ui_event_navScreen(lv_event_t * e)
@@ -284,8 +324,9 @@ void ui_navScreen_addPoint(double lat, double lon) {
 
     redrawTrail();
 
-    // Map tile layer: reload only on a tile crossing (cheap check, rare SD
-    // read), reposition every fix so it stays centered like the trail.
+    // Map tile layer: flags a reload on a tile crossing but never blocks
+    // here - see updateNavTile()'s comment. Repositioning (cheap, no I/O)
+    // still happens every fix so the map stays centered like the trail.
     updateNavTile(lat, lon);
     repositionTileLayer(lat, lon, cos(lat * M_PI / 180.0));
 }

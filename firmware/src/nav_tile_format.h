@@ -111,6 +111,30 @@ typedef struct {
 // this 0-4096 range to whatever pixel footprint it draws each tile at.
 #define NAV_TILE_EXTENT 4096
 
+// NOT part of jgauchia/Tile-Generator's own format - this project's OWN
+// scheme, layered on top of its output (see nav_tile_reader.cpp's
+// nav_tile_load()). Tile-Generator emits one NPK2 file per zoom covering
+// its ENTIRE input PBF's bounding box; for a whole-state extract
+// (California, ~1.3GB at zoom 16) that means a single huge file, and the
+// Arduino ESP32 SD library's seek() turned out to be roughly O(distance)
+// on a large file - a seek ~660MB into that 1.3GB file took long enough
+// to trip the ESP32 task watchdog and reboot the board (confirmed on real
+// hardware 2026-09-15, see CLAUDE.md's "Map tile format" section - the
+// tiny synthetic test fixture and even a single real-tile spot check
+// never seeked far enough into a file to expose this). Fix: re-pack the
+// SAME already-generated tile data (no re-running Tile-Generator, no
+// re-parsing feature contents - see firmware/assets or the sibling
+// tilegen-build checkout's split_nav_file.py) into a grid of smaller
+// per-region .nav files, each independently a fully valid instance of
+// the exact same NPK2/NAV1 format. NAV_REGION_TILES tiles square per
+// region file, keyed by ABSOLUTE slippy-map tile numbers (not relative to
+// any particular PBF extract), named Z{zoom}_r{tileY/NAV_REGION_TILES}_
+// c{tileX/NAV_REGION_TILES}.nav - see nav_tile_load()'s path construction.
+// 64 tiles/region measured empirically against real California data:
+// max resulting file ~45MB (worst case, densest LA-area region), average
+// ~1.7MB, 739 files total - comfortably bounds any single seek's cost.
+#define NAV_REGION_TILES 64
+
 // Non-text payload: coordCount (x,y) vertex pairs, each delta-encoded
 // against the PREVIOUS vertex (starting from an implicit (0,0)) then
 // zigzag-encoded then LEB128-varint-encoded - i.e. the same scheme Mapbox

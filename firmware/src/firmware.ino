@@ -84,6 +84,21 @@ void loop(void) {
 
   gps_poll();  // cheap, non-blocking Serial drain - no-ops under DEBUG/CAN_TRACE
 
+  // Services any GPS NAV tile load queued by ui_navScreen_addPoint() -
+  // MUST run from here (a normal task), never from slowUpdate()'s Ticker
+  // callback: a real nav_tile_load() blocks on SD I/O long enough to
+  // starve the watchdog if run from that context (confirmed on real
+  // hardware 2026-09-15 - see ui_navScreen.h's ui_navScreen_addPoint()
+  // comment). Cheap no-op when nothing's pending. uiMutex-guarded like
+  // every other LVGL touch (this function rebuilds tile LVGL objects) -
+  // safe to hold it across the blocking SD read too, since a normal-
+  // priority task waiting on this mutex properly yields (unlike the
+  // Ticker/esp_timer context this was moved out of).
+  if (xSemaphoreTake(uiMutex, portMAX_DELAY) == pdTRUE) {
+    ui_navScreen_processPendingTileLoad();
+    xSemaphoreGive(uiMutex);
+  }
+
   vTaskDelay(pdMS_TO_TICKS(5));
 }
 

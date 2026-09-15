@@ -31,7 +31,29 @@ extern void ui_navScreen_refresh_theme(void);
 // zombie_updaters.cpp). Called from slowUpdate() alongside the existing
 // gpsLatLonChanged dirty-check - GPS fixes update at most ~1Hz already, no
 // separate throttling needed here.
+//
+// Deliberately does NOT call nav_tile_load() itself, even on a tile
+// crossing - slowUpdate() runs as an ESP32 Ticker callback, i.e. from the
+// esp_timer system task, not a normal task. Confirmed on real hardware
+// (2026-09-15): every task-watchdog crash opening real (non-trivial)
+// California map data showed "CPU 0: esp_timer" as the running task -
+// the blocking SD I/O a real tile load needs (multiple sequential reads/
+// seeks, unavoidably some tens to hundreds of ms each) starves the esp_timer
+// task's own scheduler slice long enough to starve IDLE0 too, regardless
+// of how fast any single SD call is. An isolated test calling the exact
+// same nav_tile_load() from a normal task (setup()/loop()) never
+// reproduced this - only the Ticker-callback context did. This function
+// only ever records which tile is needed; ui_navScreen_processPendingTileLoad()
+// does the actual blocking work, and must only ever be called from a
+// normal task (firmware.ino's loop(), not any Ticker/esp_timer callback).
 extern void ui_navScreen_addPoint(double lat, double lon);
+
+// Services a pending tile load recorded by ui_navScreen_addPoint(), if
+// any - safe to call every loop() iteration (cheap no-op when nothing's
+// pending). MUST be called only from a normal task context - see
+// ui_navScreen_addPoint()'s comment for why this can't run from
+// slowUpdate()'s Ticker callback.
+extern void ui_navScreen_processPendingTileLoad(void);
 
 extern lv_obj_t * ui_navScreen;
 extern lv_obj_t * ui_navStatusLabel;
