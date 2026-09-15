@@ -21,6 +21,7 @@
 // can't run as a host/native binary either).
 #include <Arduino.h>
 #include <unity.h>
+#include "display_driver.h"
 #include "sd_driver.h"
 #include "nav_tile_reader.h"
 
@@ -42,11 +43,15 @@ void test_fixture_tile_loads(void) {
     TEST_ASSERT_EQUAL_UINT16(3, tile.featureCount);
 }
 
+static NavTileData otherTile;  // ~12KB - static, never a stack local (see nav_tile_reader.h) -
+                                // an earlier version of this test declared it as a local and
+                                // silently blew the task stack, boot-looping the board with no
+                                // serial output ever reaching UNITY_BEGIN()
+
 void test_out_of_bounds_tile_is_absent(void) {
-    NavTileData other;
     // Fixture's bounding box is exactly 1 tile at (100,100) - anything
     // else must cleanly report "not found," not garbage or a crash.
-    bool ok = nav_tile_load(16, 999, 999, &other);
+    bool ok = nav_tile_load(16, 999, 999, &otherTile);
     TEST_ASSERT_FALSE(ok);
 }
 
@@ -89,6 +94,16 @@ void test_text_feature_decodes_correctly(void) {
 
 void setup() {
     delay(2000);
+
+    // sd_init() asserts SD_CS via the CH422G I/O expander, which lives on
+    // the same I2C bus lcd_panel_start() brings up - sd_driver.h requires
+    // that ordering (see its "must run after lcd_panel_start()" comment).
+    // firmware.ino's real setup() does this too; this test has no other
+    // path to it since firmware.ino's own setup()/loop() are compiled out
+    // under UNIT_TEST (see platformio.ini's [env:waveshare-s3-lcd7-test]).
+    lcd_panel_start();
+    sd_init();
+
     UNITY_BEGIN();
     RUN_TEST(test_sd_card_mounts);
     RUN_TEST(test_fixture_tile_loads);

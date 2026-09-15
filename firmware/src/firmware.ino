@@ -6,6 +6,12 @@
 #include "gps_driver.h"
 #include "sd_driver.h"
 
+// PlatformIO defines UNIT_TEST when building an on-device test (e.g.
+// test_nav_tile, which needs sd_driver.cpp/nav_tile_reader.cpp linked in via
+// test_build_src=true) - guarded out here so this file's own setup()/loop()
+// don't collide with the test's own setup()/loop() at link time.
+#ifndef UNIT_TEST
+
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t disp_draw_buf1[LCD_WIDTH * LCD_HEIGHT / 10];
 static lv_color_t disp_draw_buf2[LCD_WIDTH * LCD_HEIGHT / 10];
@@ -80,3 +86,5 @@ void loop(void) {
 
   vTaskDelay(pdMS_TO_TICKS(5));
 }
+
+#endif  // UNIT_TEST
