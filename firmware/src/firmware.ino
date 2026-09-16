@@ -99,6 +99,16 @@ void loop(void) {
     xSemaphoreGive(uiMutex);
   }
 
+  // Services a queued route computation - same reasoning as
+  // ui_navScreen_processPendingTileLoad() above: Router::route() blocks
+  // on SD I/O (ROUTE.bin header/index/page-cache reads), so it must run
+  // from here, not from slowUpdate()'s Ticker callback. See
+  // ui_navScreen.h's ui_navScreen_processPendingRoute() comment.
+  if (xSemaphoreTake(uiMutex, portMAX_DELAY) == pdTRUE) {
+    ui_navScreen_processPendingRoute();
+    xSemaphoreGive(uiMutex);
+  }
+
   vTaskDelay(pdMS_TO_TICKS(5));
 }
 

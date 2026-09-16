@@ -71,6 +71,12 @@ extern lv_obj_t * ui____initial_actions0;
 // Use like: lv_label_set_text(titleLabel, ICON_BOLT " POWER");
 #include "font_icons_20.h"
 
+// Turn-instruction banner icons (component 5, GPS NAV screen only) - a
+// SEPARATE, larger icon font from font_icons_20 above (48px vs 20px),
+// used standalone rather than chained through text - see
+// convert_turn_icons.py's header comment for why.
+#include "font_turn_icons_48.h"
+
 // UI INIT
 void ui_init(void);
 void ui_destroy(void);

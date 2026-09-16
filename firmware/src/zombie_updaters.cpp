@@ -532,6 +532,9 @@ void slowUpdate() {
             // the animated fill tween in one call (no-op if the screen
             // doesn't exist yet).
             ui_chargingScreen_setSoc(soc, warn);
+            // GPS NAV screen's top status bar (component 5) - plain text,
+            // same reasoning as everywhere else that isn't cell-level detail.
+            if (ui_navSocLabel) lv_label_set_text_fmt(ui_navSocLabel, ICON_BOLT " %d%%", soc);
         }
         if (motTChanged) {
             bool warn = motT >= warningSet.motorTemp;
@@ -716,6 +719,10 @@ void slowUpdate() {
             }
             if (ui_splashClockCaptionLabel) {
                 lv_label_set_text(ui_splashClockCaptionLabel, clockHasFix ? "UTC" : "UTC - waiting for GPS fix");
+            }
+            if (ui_navClockLabel) {
+                if (clockHasFix) lv_label_set_text_fmt(ui_navClockLabel, "%02d:%02d", clockHour, clockMinute);
+                else lv_label_set_text(ui_navClockLabel, "--:--");
             }
         }
         xSemaphoreGive(uiMutex);

@@ -5,16 +5,18 @@
 extern "C" {
 #endif
 
-// SCREEN: ui_navScreen - GPS breadcrumb trail (2026-09-14). The buildable-
-// now piece of the architecture doc's IceNav-v3-style offline map screen:
-// a real map (raster tiles from OpenStreetMap or similar) still needs map
-// tile assets prepared for wherever this vehicle actually drives (a data-
-// acquisition decision, not a coding one) plus SD card wiring this repo has
-// never touched - both still genuinely blocked, unchanged from
-// ui_gpsScreen.h's note. This screen needs neither: it plots the
-// accumulated recent GPS fix history as a line, current position always
-// centered, using only gpsData (gps_driver.h) - real navigational value
-// (where you've been, current heading) buildable in software today.
+// SCREEN: ui_navScreen - GPS NAV: offline map + turn-by-turn (component 5
+// of the IceNav-v3-based nav screen rebuild, 2026-09-16 - see the ported
+// NavReader/router/nav_map_render/nav_turn components this wires
+// together). Started 2026-09-14 as a breadcrumb-trail stand-in (see
+// waveshare-dash-build.md's milestone history); now the real thing: a
+// single NAV tile's filled road/polygon geometry (nav_map_render.h)
+// recentered every GPS fix, a calculated route line + turn-by-turn banner
+// (router.h/nav_turn.h) over it, current position always centered.
+// Converted from ui_navScreen.c to .cpp for this pass - Router/NavState/
+// TrackVector/TurnPointVector are C++-only, no C wrapper (same reasoning
+// ui_dynoLiveScreen.cpp already established for touching C++ types
+// directly rather than adding wrapper boilerplate).
 //
 // Not the same screen as ui_gpsScreen (GPS telemetry grid, unchanged) -
 // this is a new 12th screen inserted into the topology between GPS and
@@ -55,10 +57,20 @@ extern void ui_navScreen_addPoint(double lat, double lon);
 // slowUpdate()'s Ticker callback.
 extern void ui_navScreen_processPendingTileLoad(void);
 
+// Services a pending route computation (component 5) - Router::route()
+// does blocking SD I/O (ROUTE.bin header/index/page-cache reads), so like
+// ui_navScreen_processPendingTileLoad() this must only ever be called
+// from a normal task (firmware.ino's loop()), never from slowUpdate()'s
+// Ticker-callback context. Safe to call every loop() iteration (cheap
+// no-op when nothing's pending).
+extern void ui_navScreen_processPendingRoute(void);
+
 extern lv_obj_t * ui_navScreen;
 extern lv_obj_t * ui_navStatusLabel;
 extern lv_obj_t * ui_navSpeedLabel;
 extern lv_obj_t * ui_navHeadingLabel;
+extern lv_obj_t * ui_navClockLabel;
+extern lv_obj_t * ui_navSocLabel;
 
 #ifdef __cplusplus
 } /*extern "C"*/

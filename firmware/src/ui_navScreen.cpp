@@ -1,24 +1,38 @@
 // ============================================================================
-// ui_navScreen.c - GPS breadcrumb trail (2026-09-14)
+// ui_navScreen.cpp - GPS NAV: offline map + turn-by-turn navigation
 // ============================================================================
-// See ui_navScreen.h for why this exists instead of a full tile-based map.
-// Full-screen trail canvas (800x410) with a thin telemetry strip at the
-// bottom (800x70) - "thin telemetry strip overlay (speed, heading) at the
-// edge" per CLAUDE.md's original GPS navigation note, kept even without
-// real map tiles underneath yet.
+// See ui_navScreen.h for the component-5 rebuild history and why this is
+// now .cpp. Layout, top to bottom: thin top status bar (time, SOC%), map
+// canvas (single NAV tile's filled geometry + route line + turn banner
+// overlay + "you are here" dot), bottom telemetry strip (fix status/
+// speed/heading, then ETA/distance-remaining/swipe-position-dots).
 //
 // Projection: local flat-earth approximation, recomputed from scratch
 // against the CURRENT (latest) fix every update, not the trail's start
 // point - this is what keeps "you are here" pinned to canvas center as the
 // vehicle moves. Standard equirectangular approximation (good to well
-// under 1% error at the few-km scale this trail covers - the same
+// under 1% error at the few-km scale this screen covers - the same
 // "simple, sanity-checked, not aerospace-grade" bar already applied to the
 // sunrise/solar-declination calc elsewhere in this project):
 //   metersNorth = (lat - curLat) * 111320
 //   metersEast  = (lon - curLon) * 111320 * cos(curLat in radians)
 // 111320 = meters per degree of latitude, effectively constant at driving
 // latitudes (varies <1% pole-to-equator) - good enough here, not orbital
-// mechanics.
+// mechanics. The route line and turn-banner distance math (gps_math.h/
+// nav_turn.h) use real Haversine distance instead - only the on-screen
+// pixel projection uses this flat-earth shortcut.
+//
+// Routing (component 5): no destination-entry UI exists yet in this
+// project (no address search, no long-press-to-set) - out of scope for
+// this pass, a real gap flagged and explicitly deferred rather than
+// silently worked around. NAV_TEST_DEST_LAT/LON below is a hardcoded
+// placeholder destination, same "dev-aid, not the real feature" spirit as
+// gps_mock_source.cpp's canned route. Router::route() needs a real
+// ROUTE.bin (CAR profile) on the SD card to succeed - if that file
+// doesn't exist yet, routing fails gracefully (RouterResult != OK) and
+// this screen just shows its map/trail with no route line and "NO ROUTE"
+// in the turn banner, same "false is fine, just means nothing there"
+// convention nav_tile_load() already uses.
 //
 // No SquareLine project (same as every other hand-written screen here).
 //
@@ -35,9 +49,17 @@
 #include "ui.h"
 #include "nav_reader.h"
 #include "nav_map_render.h"
+#include "router.h"
+#include "nav_turn.h"
+#include "gps_math.h"
+#include "gps_driver.h"
 #include <math.h>
 
 lv_obj_t * ui_navScreen = NULL;
+
+static lv_obj_t * ui_navTopBar = NULL;
+lv_obj_t * ui_navClockLabel = NULL;
+lv_obj_t * ui_navSocLabel = NULL;
 
 static lv_obj_t * ui_navCanvas = NULL;
 static lv_obj_t * ui_navTileLayer = NULL;  // map geometry - created before
@@ -45,15 +67,34 @@ static lv_obj_t * ui_navTileLayer = NULL;  // map geometry - created before
                                              // they always draw on top of it
 static lv_obj_t * ui_navTrailLine = NULL;
 static lv_obj_t * ui_navHereDot = NULL;
+static lv_obj_t * ui_navScaleLabel = NULL;
+
+static lv_obj_t * ui_navTurnBanner = NULL;
+static lv_obj_t * ui_navTurnIconLabel = NULL;
+static lv_obj_t * ui_navTurnDistLabel = NULL;
+
 static lv_obj_t * ui_navStrip = NULL;
 lv_obj_t * ui_navStatusLabel = NULL;
 lv_obj_t * ui_navSpeedLabel = NULL;
 lv_obj_t * ui_navHeadingLabel = NULL;
-static lv_obj_t * ui_navScaleLabel = NULL;
+static lv_obj_t * ui_navEtaLabel = NULL;
+static lv_obj_t * ui_navDistRemainingLabel = NULL;
 
+// Swipe-nav position dots - purely decorative, this screen's own visual
+// convention (no other screen in this project has this pattern yet).
+// Matches the current 11-screen topology (CLAUDE.md's "Project overview"
+// chain) - update NAV_TOPOLOGY_SCREEN_COUNT/THIS_INDEX together if a
+// screen is ever added/removed from that chain.
+#define NAV_TOPOLOGY_SCREEN_COUNT 11
+#define NAV_TOPOLOGY_THIS_INDEX   8   // 0=Splash,1=Settings,2=Speed,3=Drive,
+                                       // 4=Status,5=Battery,6=Charging,7=GPS,
+                                       // 8=GPS NAV,9=Dyno LIVE,10=Dyno RESULTS
+static lv_obj_t * ui_navDots[NAV_TOPOLOGY_SCREEN_COUNT];
+
+#define TOPBAR_H 32
 #define CANVAS_W 800
-#define CANVAS_H 410
-#define STRIP_H  70
+#define STRIP_H  90
+#define CANVAS_H (480 - TOPBAR_H - STRIP_H)
 
 #define TRAIL_MAX_POINTS 120  // ~2 minutes of trail at the ~1Hz GPS fix rate
 #define METERS_PER_DEG_LAT 111320.0
@@ -68,14 +109,6 @@ static int trailHead = 0;    // index the NEXT point will be written to
 static lv_point_t trailScreenPoints[TRAIL_MAX_POINTS];
 
 // --- NAV vector tile rendering ---
-// Draws whatever tile currently covers the vehicle's position, reusing
-// this file's existing flat-earth-meters projection (see header comment)
-// for tile geometry too, so the trail and the map draw in the exact same
-// coordinate system. Deliberately simple for a first pass: only the
-// fixture's line/polygon/text/point feature kinds are handled, only a
-// polygon's OUTER ring is drawn (no holes), and no de-dup/LOD by minZoom -
-// see nav_reader.h's own caps-are-a-guess note, same "buildable now,
-// revisit once real Tile-Generator output exists" spirit.
 #define NAV_TILE_ZOOM 16  // matches firmware/assets/gen_nav_fixture.py's
                            // fixture; real map data should target this
                            // zoom too until there's a reason to vary it
@@ -91,11 +124,35 @@ static uint32_t loadedTileX = 0, loadedTileY = 0;
 static lv_obj_t * tileFeatureObjs[NAV_MAX_FEATURES_PER_TILE];
 
 // +1 per feature so a closed polygon ring can repeat its first vertex.
-// Plain int (not lv_point_t) - nav_map_render's polygon/line calls take
-// separate px[]/py[] int arrays, matching upstream fillPolygonGeneral's
-// own signature.
 static int tileFeaturePX[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
 static int tileFeaturePY[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
+
+// --- Routing (component 5) ---
+// Hardcoded placeholder destination - see this file's header comment for
+// why. Ferry Building, San Francisco - a real, driveable landmark inside
+// the generated California NAV tile/ROUTE.bin coverage area, ~4.3km from
+// gps_mock_source.cpp's canned route start near Hayes Valley.
+#define NAV_TEST_DEST_LAT 37.7955
+#define NAV_TEST_DEST_LON -122.3937
+#define NAV_ROUTE_SPEED_KMH 60  // selects the CAR ROUTE.bin profile - see routeBinPath()
+
+#define NAV_ROUTE_MAX_POINTS 300  // cap for on-screen route line drawing -
+                                    // see this file's header comment; a
+                                    // real A* route can be longer than
+                                    // this, silently truncated same as
+                                    // every other fixed-capacity buffer
+                                    // in this project (not an error)
+static int routePX[NAV_ROUTE_MAX_POINTS];
+static int routePY[NAV_ROUTE_MAX_POINTS];
+
+static TrackVector navRoute;
+static TurnPointVector navTurns;
+static NavState navState;
+static bool routeReady = false;     // true once navRoute has been computed
+                                      // (successfully or not - see
+                                      // processPendingRoute())
+static bool routeComputePending = false;
+static double routeComputeLat = 0, routeComputeLon = 0;
 
 // RGB565 -> lv_color_t without assuming lv_color_t's internal union layout
 // (LV_COLOR_DEPTH is 16 per include/lv_conf.h, but going through
@@ -159,6 +216,32 @@ static void buildTileLayer(void) {
     }
 }
 
+// Projects navRoute into screen space (same flat-earth-meters projection
+// as everything else on this canvas) and draws it into nav_map_render's
+// raster frame on top of the tile geometry - called from
+// repositionTileLayer() once per frame, after all tile features. No-op if
+// no route has been computed yet.
+static void drawRouteLine(double curLat, double curLon, double cosLat) {
+    if (navRoute.empty()) return;
+
+    int cx = CANVAS_W / 2;
+    int cy = CANVAS_H / 2;
+
+    int n = (int)navRoute.size();
+    if (n > NAV_ROUTE_MAX_POINTS) n = NAV_ROUTE_MAX_POINTS;
+
+    for (int i = 0; i < n; i++) {
+        double metersNorth = (navRoute[i].lat - curLat) * METERS_PER_DEG_LAT;
+        double metersEast  = (navRoute[i].lon - curLon) * METERS_PER_DEG_LAT * cosLat;
+        routePX[i] = (int)(cx + metersEast / METERS_PER_PIXEL);
+        routePY[i] = (int)(cy - metersNorth / METERS_PER_PIXEL);
+    }
+
+    uint16_t routeColor565 = lv_color_to16(ui_theme_accent());
+    nav_map_render_line(routePX, routePY, n, /*widthPx=*/5, routeColor565,
+                         /*drawCasing=*/false, 0, 0);
+}
+
 // Recomputes every active tile feature's screen position relative to the
 // CURRENT fix, exactly like redrawTrail() does for the breadcrumb trail -
 // called every GPS fix (not just on tile reload) so map geometry stays
@@ -169,9 +252,10 @@ static void repositionTileLayer(double curLat, double curLon, double cosLat) {
 
     // One raster frame for every LINESTRING/POLYGON feature this call -
     // begin/end bracket the per-feature nav_map_render_polygon()/_line()
-    // calls below, matching nav_map_render.h's one-call-per-frame
-    // contract. TEXT/POINT features (LVGL objects) are repositioned in
-    // the same loop but don't touch the raster frame at all.
+    // calls below (plus the route line), matching nav_map_render.h's
+    // one-call-per-frame contract. TEXT/POINT features (LVGL objects) are
+    // repositioned in the same loop but don't touch the raster frame at
+    // all.
     nav_map_render_begin_frame(lv_color_to16(ui_theme_panel_bg()));
 
     for (uint16_t i = 0; i < currentTile.featureCount; i++) {
@@ -234,6 +318,8 @@ static void repositionTileLayer(double curLat, double curLon, double cosLat) {
             }
         }
     }
+
+    drawRouteLine(curLat, curLon, cosLat);
 
     nav_map_render_end_frame();
 }
@@ -303,6 +389,107 @@ void ui_navScreen_processPendingTileLoad(void) {
     loadTile(tx, ty, pendingLat, pendingLon);
 }
 
+// Flags a one-time route computation on the first fix after this screen
+// opens - never blocks here, see ui_navScreen_processPendingRoute().
+static void updateNavRoute(double lat, double lon) {
+    if (routeReady) return;
+    routeComputePending = true;
+    routeComputeLat = lat;
+    routeComputeLon = lon;
+}
+
+void ui_navScreen_processPendingRoute(void) {
+    if (!routeComputePending) return;
+    routeComputePending = false;
+    if (!ui_navScreen) return;  // screen closed before this got serviced
+
+    routeReady = true;  // set regardless of outcome - don't keep retrying
+                          // every fix if routing genuinely has no data
+                          // (see this file's header comment)
+    RouterResult result = router.route((float)routeComputeLat, (float)routeComputeLon,
+                                        (float)NAV_TEST_DEST_LAT, (float)NAV_TEST_DEST_LON,
+                                        NAV_ROUTE_SPEED_KMH, navRoute);
+    if (result == RouterResult::OK && !navRoute.empty()) {
+        navTurns = nav_turn_detect(navRoute);
+    } else {
+        navRoute.clear();
+        navTurns.clear();
+    }
+    navState = NavState{};
+}
+
+// Maps a TurnDirection to its icon glyph - NONE case (OFF_TRACK, or no
+// route computed) is handled by the caller instead of here since it also
+// needs different label text, not just a different icon.
+static const char* turnIconFor(TurnDirection dir) {
+    switch (dir) {
+        case TurnDirection::SOFT_LEFT:  return TURN_ICON_TURN_LEFT;
+        case TurnDirection::SOFT_RIGHT: return TURN_ICON_TURN_RIGHT;
+        case TurnDirection::HARD_LEFT:  return TURN_ICON_TURN_SHARP_LEFT;
+        case TurnDirection::HARD_RIGHT: return TURN_ICON_TURN_SHARP_RIGHT;
+        case TurnDirection::FINISH:     return TURN_ICON_FLAG;
+        case TurnDirection::STRAIGHT:
+        default:                        return TURN_ICON_STRAIGHT;
+    }
+}
+
+static void formatDistance(char *buf, size_t bufSize, float meters) {
+    if (meters < 1000.0f) snprintf(buf, bufSize, "%.0f m", meters);
+    else snprintf(buf, bufSize, "%.1f km", meters / 1000.0f);
+}
+
+// Updates the turn banner and the bottom strip's ETA/distance-remaining -
+// called every GPS fix from ui_navScreen_addPoint(), pure math, no I/O.
+static void updateTurnGuidance(double lat, double lon, float speedKph) {
+    if (!ui_navTurnIconLabel || !ui_navTurnDistLabel) return;
+
+    if (navRoute.empty()) {
+        lv_label_set_text(ui_navTurnIconLabel, TURN_ICON_STRAIGHT);
+        lv_label_set_text(ui_navTurnDistLabel, "NO ROUTE");
+        if (ui_navEtaLabel) lv_label_set_text(ui_navEtaLabel, "ETA --:--");
+        if (ui_navDistRemainingLabel) lv_label_set_text(ui_navDistRemainingLabel, "-- remaining");
+        return;
+    }
+
+    TurnGuidance g = evaluateTurnGuidance((float)lat, (float)lon, navRoute, navTurns, navState);
+
+    char distBuf[24];
+    if (g.direction == TurnDirection::OFF_TRACK) {
+        lv_label_set_text(ui_navTurnIconLabel, TURN_ICON_STRAIGHT);
+        lv_label_set_text(ui_navTurnDistLabel, "OFF ROUTE");
+    } else {
+        lv_label_set_text(ui_navTurnIconLabel, turnIconFor(g.direction));
+        formatDistance(distBuf, sizeof(distBuf), g.distanceMeters);
+        lv_label_set_text(ui_navTurnDistLabel, distBuf);
+    }
+
+    // Distance remaining: straight-line to the route's final waypoint,
+    // not the actual remaining path length - a deliberate simplification
+    // (see this file's header comment's "simple, not aerospace-grade" bar).
+    float distRemaining = calcDist((float)lat, (float)lon,
+                                    navRoute.back().lat, navRoute.back().lon);
+    if (ui_navDistRemainingLabel) {
+        formatDistance(distBuf, sizeof(distBuf), distRemaining);
+        lv_label_set_text_fmt(ui_navDistRemainingLabel, "%s remaining", distBuf);
+    }
+
+    if (ui_navEtaLabel) {
+        if (speedKph < 1.0f) {
+            lv_label_set_text(ui_navEtaLabel, "ETA --:--");
+        } else {
+            float etaHours = (distRemaining / 1000.0f) / speedKph;
+            int curHour = 0, curMinute = 0;
+            if (gpsData.hasFix) { curHour = gpsData.hour; curMinute = gpsData.minute; }
+            double totalMinutes = curHour * 60.0 + curMinute + etaHours * 60.0;
+            int etaHour = ((int)(totalMinutes / 60.0)) % 24;
+            int etaMinute = ((int)totalMinutes) % 60;
+            if (etaHour < 0) etaHour += 24;
+            if (etaMinute < 0) etaMinute += 60;
+            lv_label_set_text_fmt(ui_navEtaLabel, "ETA %02d:%02d", etaHour, etaMinute);
+        }
+    }
+}
+
 void ui_event_navScreen(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -362,6 +549,11 @@ void ui_navScreen_addPoint(double lat, double lon) {
     // still happens every fix so the map stays centered like the trail.
     updateNavTile(lat, lon);
     repositionTileLayer(lat, lon, cos(lat * M_PI / 180.0));
+
+    // Routing: flags a one-time compute, never blocks here either - see
+    // updateNavRoute()'s comment.
+    updateNavRoute(lat, lon);
+    updateTurnGuidance(lat, lon, gpsData.speedKph);
 }
 
 void ui_navScreen_screen_init(void)
@@ -371,24 +563,46 @@ void ui_navScreen_screen_init(void)
     lv_obj_set_style_bg_color(ui_navScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_navScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // --- Trail canvas ---
+    // --- Top status bar: time + SOC% (see this file's header comment -
+    // no ambient-temperature sensor exists in this project, so the
+    // original mockup's third "temp" slot is dropped rather than faked) ---
+    ui_navTopBar = lv_obj_create(ui_navScreen);
+    lv_obj_clear_flag(ui_navTopBar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(ui_navTopBar, CANVAS_W, TOPBAR_H);
+    lv_obj_set_pos(ui_navTopBar, 0, 0);
+    lv_obj_set_style_pad_all(ui_navTopBar, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(ui_navTopBar, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui_navTopBar, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_navTopBar, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_navTopBar, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    ui_navClockLabel = lv_label_create(ui_navTopBar);
+    lv_obj_align(ui_navClockLabel, LV_ALIGN_LEFT_MID, 16, 0);
+    lv_label_set_text(ui_navClockLabel, "--:--");
+    lv_obj_set_style_text_color(ui_navClockLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navClockLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    ui_navSocLabel = lv_label_create(ui_navTopBar);
+    lv_obj_align(ui_navSocLabel, LV_ALIGN_RIGHT_MID, -16, 0);
+    lv_label_set_text(ui_navSocLabel, ICON_BOLT " --%");
+    lv_obj_set_style_text_color(ui_navSocLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navSocLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    // --- Map canvas ---
     ui_navCanvas = lv_obj_create(ui_navScreen);
     lv_obj_clear_flag(ui_navCanvas, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(ui_navCanvas, CANVAS_W, CANVAS_H);
-    lv_obj_set_pos(ui_navCanvas, 0, 0);
+    lv_obj_set_pos(ui_navCanvas, 0, TOPBAR_H);
     lv_obj_set_style_pad_all(ui_navCanvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_radius(ui_navCanvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(ui_navCanvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(ui_navCanvas, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_navCanvas, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // Raster map layer (roads/polygons, filled with holes via
-    // nav_map_render.h) - created FIRST so it's the bottommost child;
-    // ui_navTileLayer's point/text objects and the trail/here-dot below
-    // all draw on top of it. Its own background is opaque (the canvas
-    // panel color, painted every frame by nav_map_render_begin_frame())
-    // so it stands in for what used to be ui_navTileLayer's transparent
-    // bg showing the canvas through - no separate transparency needed.
+    // Raster map layer (roads/polygons + route line, filled with holes
+    // via nav_map_render.h) - created FIRST so it's the bottommost child;
+    // ui_navTileLayer's point/text objects and the trail/here-dot/turn
+    // banner below all draw on top of it.
     nav_map_render_init(ui_navCanvas, CANVAS_W, CANVAS_H);
 
     // Point/text feature layer - created before the trail/here-dot below
@@ -426,39 +640,99 @@ void ui_navScreen_screen_init(void)
     lv_obj_set_style_border_color(ui_navHereDot, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_navScaleLabel = lv_label_create(ui_navCanvas);
-    lv_obj_align(ui_navScaleLabel, LV_ALIGN_TOP_LEFT, 12, 8);
+    lv_obj_align(ui_navScaleLabel, LV_ALIGN_BOTTOM_LEFT, 12, -8);
     lv_label_set_text_fmt(ui_navScaleLabel, "~%.0fm across - no map tiles yet", CANVAS_W * METERS_PER_PIXEL);
     lv_obj_set_style_text_color(ui_navScaleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_navScaleLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    // --- Turn-instruction banner, overlaid near the top of the map ---
+    ui_navTurnBanner = lv_obj_create(ui_navCanvas);
+    lv_obj_clear_flag(ui_navTurnBanner, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(ui_navTurnBanner, 220, 72);
+    lv_obj_align(ui_navTurnBanner, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_set_style_radius(ui_navTurnBanner, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_navTurnBanner, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(ui_navTurnBanner, 235, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui_navTurnBanner, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(ui_navTurnBanner, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(ui_navTurnBanner, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    ui_navTurnIconLabel = lv_label_create(ui_navTurnBanner);
+    lv_obj_align(ui_navTurnIconLabel, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_label_set_text(ui_navTurnIconLabel, TURN_ICON_STRAIGHT);
+    lv_obj_set_style_text_color(ui_navTurnIconLabel, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navTurnIconLabel, &font_turn_icons_48, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    ui_navTurnDistLabel = lv_label_create(ui_navTurnBanner);
+    lv_obj_align(ui_navTurnDistLabel, LV_ALIGN_RIGHT_MID, -4, 0);
+    lv_label_set_text(ui_navTurnDistLabel, "NO ROUTE");
+    lv_obj_set_style_text_color(ui_navTurnDistLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navTurnDistLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // --- Telemetry strip ---
     ui_navStrip = lv_obj_create(ui_navScreen);
     lv_obj_clear_flag(ui_navStrip, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_size(ui_navStrip, CANVAS_W, STRIP_H);
-    lv_obj_set_pos(ui_navStrip, 0, CANVAS_H);
+    lv_obj_set_pos(ui_navStrip, 0, TOPBAR_H + CANVAS_H);
     lv_obj_set_style_pad_all(ui_navStrip, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_radius(ui_navStrip, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(ui_navStrip, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(ui_navStrip, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_navStrip, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
+    // Row 1 (top half): fix status / speed / heading - unchanged from the
+    // breadcrumb-trail-only version.
     ui_navStatusLabel = lv_label_create(ui_navStrip);
-    lv_obj_align(ui_navStatusLabel, LV_ALIGN_LEFT_MID, 24, 0);
+    lv_obj_align(ui_navStatusLabel, LV_ALIGN_TOP_LEFT, 24, 6);
     lv_label_set_text(ui_navStatusLabel, "NO FIX");
     lv_obj_set_style_text_color(ui_navStatusLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_navStatusLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_navSpeedLabel = lv_label_create(ui_navStrip);
-    lv_obj_align(ui_navSpeedLabel, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(ui_navSpeedLabel, LV_ALIGN_TOP_MID, 0, 6);
     lv_label_set_text(ui_navSpeedLabel, ICON_SPEED " -- km/h");
     lv_obj_set_style_text_color(ui_navSpeedLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_navSpeedLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_navHeadingLabel = lv_label_create(ui_navStrip);
-    lv_obj_align(ui_navHeadingLabel, LV_ALIGN_RIGHT_MID, -24, 0);
+    lv_obj_align(ui_navHeadingLabel, LV_ALIGN_TOP_RIGHT, -24, 6);
     lv_label_set_text(ui_navHeadingLabel, ICON_NAVIGATION " --\xC2\xB0");
     lv_obj_set_style_text_color(ui_navHeadingLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_navHeadingLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    // Row 2 (bottom half): ETA / distance-remaining / swipe-position dots.
+    ui_navEtaLabel = lv_label_create(ui_navStrip);
+    lv_obj_align(ui_navEtaLabel, LV_ALIGN_BOTTOM_LEFT, 24, -8);
+    lv_label_set_text(ui_navEtaLabel, "ETA --:--");
+    lv_obj_set_style_text_color(ui_navEtaLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navEtaLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    ui_navDistRemainingLabel = lv_label_create(ui_navStrip);
+    lv_obj_align(ui_navDistRemainingLabel, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_label_set_text(ui_navDistRemainingLabel, "-- remaining");
+    lv_obj_set_style_text_color(ui_navDistRemainingLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navDistRemainingLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_t * dotsRow = lv_obj_create(ui_navStrip);
+    lv_obj_clear_flag(dotsRow, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(dotsRow, NAV_TOPOLOGY_SCREEN_COUNT * 16, 8);
+    lv_obj_align(dotsRow, LV_ALIGN_BOTTOM_RIGHT, -24, -12);
+    lv_obj_set_style_bg_opa(dotsRow, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(dotsRow, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(dotsRow, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_flex_flow(dotsRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(dotsRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    for (int i = 0; i < NAV_TOPOLOGY_SCREEN_COUNT; i++) {
+        lv_obj_t * dot = lv_obj_create(dotsRow);
+        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_size(dot, 8, 8);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+        bool isThis = (i == NAV_TOPOLOGY_THIS_INDEX);
+        lv_obj_set_style_bg_color(dot, isThis ? ui_theme_accent() : ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(dot, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+        ui_navDots[i] = dot;
+    }
 
     lv_obj_add_event_cb(ui_navScreen, ui_event_navScreen, LV_EVENT_ALL, NULL);
 }
@@ -468,21 +742,34 @@ void ui_navScreen_refresh_theme(void)
     if (ui_navScreen == NULL) return;
 
     lv_obj_set_style_bg_color(ui_navScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    if (ui_navTopBar) lv_obj_set_style_bg_color(ui_navTopBar, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navCanvas) lv_obj_set_style_bg_color(ui_navCanvas, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navTrailLine) lv_obj_set_style_line_color(ui_navTrailLine, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navHereDot) lv_obj_set_style_border_color(ui_navHereDot, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navScaleLabel) lv_obj_set_style_text_color(ui_navScaleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    if (ui_navTurnBanner) {
+        lv_obj_set_style_bg_color(ui_navTurnBanner, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(ui_navTurnBanner, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+    if (ui_navTurnIconLabel) lv_obj_set_style_text_color(ui_navTurnIconLabel, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navStrip) lv_obj_set_style_bg_color(ui_navStrip, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    // Status/speed/heading label text/colors are data-driven and left
-    // alone here - they self-correct on their next natural data update,
-    // same reasoning as every other screen in this codebase.
+    for (int i = 0; i < NAV_TOPOLOGY_SCREEN_COUNT; i++) {
+        if (!ui_navDots[i]) continue;
+        bool isThis = (i == NAV_TOPOLOGY_THIS_INDEX);
+        lv_obj_set_style_bg_color(ui_navDots[i], isThis ? ui_theme_accent() : ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+    // Status/speed/heading/turn-dist/ETA/distance-remaining label text/
+    // colors are data-driven and left alone here - they self-correct on
+    // their next natural data update, same reasoning as every other
+    // screen in this codebase.
 }
 
 void ui_navScreen_screen_destroy(void)
 {
     if (ui_navScreen) lv_obj_del(ui_navScreen);  // recursively deletes ui_navTileLayer,
-                                                   // the raster layer's lv_img, and every
-                                                   // feature object under them too
+                                                   // the raster layer's lv_img, the turn
+                                                   // banner, and every feature object
+                                                   // under them too
 
     // The raster layer's backing sprite lives in nav_map_render.cpp's own
     // static storage (PSRAM), not owned by LVGL - lv_obj_del() above just
@@ -490,17 +777,27 @@ void ui_navScreen_screen_destroy(void)
     // itself here, same "explicit teardown, not left to next init()"
     // discipline as every other driver in this project.
     nav_map_render_deinit();
+    router.unload();
 
     ui_navScreen = NULL;
+    ui_navTopBar = NULL;
+    ui_navClockLabel = NULL;
+    ui_navSocLabel = NULL;
     ui_navCanvas = NULL;
     ui_navTileLayer = NULL;
     ui_navTrailLine = NULL;
     ui_navHereDot = NULL;
+    ui_navScaleLabel = NULL;
+    ui_navTurnBanner = NULL;
+    ui_navTurnIconLabel = NULL;
+    ui_navTurnDistLabel = NULL;
     ui_navStrip = NULL;
     ui_navStatusLabel = NULL;
     ui_navSpeedLabel = NULL;
     ui_navHeadingLabel = NULL;
-    ui_navScaleLabel = NULL;
+    ui_navEtaLabel = NULL;
+    ui_navDistRemainingLabel = NULL;
+    for (int i = 0; i < NAV_TOPOLOGY_SCREEN_COUNT; i++) ui_navDots[i] = NULL;
     trailCount = 0;
     trailHead = 0;
 
@@ -509,4 +806,11 @@ void ui_navScreen_screen_destroy(void)
     // rebuild next time the screen is opened, even at the same position.
     for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) tileFeatureObjs[i] = NULL;
     tileLoaded = false;
+
+    // Force a fresh route computation next time the screen opens too.
+    navRoute.clear();
+    navTurns.clear();
+    navState = NavState{};
+    routeReady = false;
+    routeComputePending = false;
 }
