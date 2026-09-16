@@ -34,6 +34,7 @@
 
 #include "ui.h"
 #include "nav_reader.h"
+#include "nav_map_render.h"
 #include <math.h>
 
 lv_obj_t * ui_navScreen = NULL;
@@ -84,9 +85,17 @@ static NavTileData currentTile;  // ~12KB - static, never a stack local
 static bool tileLoaded = false;
 static uint32_t loadedTileX = 0, loadedTileY = 0;
 
+// TEXT/POINT features only, now - LINESTRING/POLYGON render via
+// nav_map_render.h's raster sprite instead (see that header's comment
+// for why: real filled polygons with holes, which lv_line can't do).
 static lv_obj_t * tileFeatureObjs[NAV_MAX_FEATURES_PER_TILE];
+
 // +1 per feature so a closed polygon ring can repeat its first vertex.
-static lv_point_t tileFeaturePoints[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
+// Plain int (not lv_point_t) - nav_map_render's polygon/line calls take
+// separate px[]/py[] int arrays, matching upstream fillPolygonGeneral's
+// own signature.
+static int tileFeaturePX[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
+static int tileFeaturePY[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
 
 // RGB565 -> lv_color_t without assuming lv_color_t's internal union layout
 // (LV_COLOR_DEPTH is 16 per include/lv_conf.h, but going through
@@ -141,15 +150,11 @@ static void buildTileLayer(void) {
             lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
             tileFeatureObjs[i] = dot;
         } else {
-            // LINESTRING or POLYGON (outer ring only - see file header).
-            lv_obj_t * line = lv_line_create(ui_navTileLayer);
-            lv_obj_set_size(line, CANVAS_W, CANVAS_H);
-            lv_obj_set_pos(line, 0, 0);
-            uint8_t px = f->widthPx / 2;  // widthPx is in 0.5px units (nav_tile_format.h)
-            lv_obj_set_style_line_width(line, px > 0 ? px : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_line_rounded(line, true, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_line_color(line, color, LV_PART_MAIN | LV_STATE_DEFAULT);
-            tileFeatureObjs[i] = line;
+            // LINESTRING or POLYGON - rendered into nav_map_render's
+            // raster sprite instead of an lv_obj (see file header); no
+            // LVGL object needed, tileFeatureObjs[i] stays NULL so
+            // repositionTileLayer() knows to route this feature there.
+            tileFeatureObjs[i] = NULL;
         }
     }
 }
@@ -162,12 +167,19 @@ static void repositionTileLayer(double curLat, double curLon, double cosLat) {
     int cx = CANVAS_W / 2;
     int cy = CANVAS_H / 2;
 
+    // One raster frame for every LINESTRING/POLYGON feature this call -
+    // begin/end bracket the per-feature nav_map_render_polygon()/_line()
+    // calls below, matching nav_map_render.h's one-call-per-frame
+    // contract. TEXT/POINT features (LVGL objects) are repositioned in
+    // the same loop but don't touch the raster frame at all.
+    nav_map_render_begin_frame(lv_color_to16(ui_theme_panel_bg()));
+
     for (uint16_t i = 0; i < currentTile.featureCount; i++) {
-        lv_obj_t * obj = tileFeatureObjs[i];
-        if (!obj) continue;
         NavFeature *f = &currentTile.features[i];
 
         if (f->geomType == NAV_GEOM_TEXT || f->geomType == NAV_GEOM_POINT) {
+            lv_obj_t * obj = tileFeatureObjs[i];
+            if (!obj) continue;
             int16_t lx = (f->geomType == NAV_GEOM_TEXT) ? f->textX : f->vx[0];
             int16_t ly = (f->geomType == NAV_GEOM_TEXT) ? f->textY : f->vy[0];
             double lat, lon;
@@ -181,28 +193,49 @@ static void repositionTileLayer(double curLat, double curLon, double cosLat) {
             // lv_obj_get_size() round-trip per feature per fix.
             lv_obj_set_pos(obj, x, y);
         } else {
+            // LINESTRING or POLYGON - project every vertex (all rings,
+            // not just the outer one - nav_map_render_polygon() supports
+            // holes via ringEnds, unlike the lv_line approach this
+            // replaced) and hand off to the raster renderer.
             uint16_t vertCount = f->vertexCount;
-            bool closeLoop = (f->geomType == NAV_GEOM_POLYGON);
-            if (closeLoop) {
-                // Outer ring only: ringEnds[0] is its vertex count (see
-                // nav_tile_format.h's cumulative-ring-end encoding).
-                vertCount = (f->ringCount > 0 && f->ringEnds[0] <= f->vertexCount) ? f->ringEnds[0] : f->vertexCount;
-            }
+            if (vertCount > NAV_MAX_VERTICES_PER_FEATURE) vertCount = NAV_MAX_VERTICES_PER_FEATURE;
+
             for (uint16_t v = 0; v < vertCount; v++) {
                 double lat, lon;
                 nav_tile_local_to_latlon(NAV_TILE_ZOOM, currentTile.tileX, currentTile.tileY, f->vx[v], f->vy[v], &lat, &lon);
                 double metersNorth = (lat - curLat) * METERS_PER_DEG_LAT;
                 double metersEast  = (lon - curLon) * METERS_PER_DEG_LAT * cosLat;
-                tileFeaturePoints[i][v].x = (lv_coord_t)(cx + metersEast / METERS_PER_PIXEL);
-                tileFeaturePoints[i][v].y = (lv_coord_t)(cy - metersNorth / METERS_PER_PIXEL);
+                tileFeaturePX[i][v] = (int)(cx + metersEast / METERS_PER_PIXEL);
+                tileFeaturePY[i][v] = (int)(cy - metersNorth / METERS_PER_PIXEL);
             }
-            if (closeLoop && vertCount > 0 && vertCount < NAV_MAX_VERTICES_PER_FEATURE + 1) {
-                tileFeaturePoints[i][vertCount] = tileFeaturePoints[i][0];
-                vertCount++;
+
+            // NavFeature.colorRgb565 is already packed r5g6b5 (see
+            // nav_reader.h) - the exact same bit layout this sprite's
+            // rgb565_nonswapped buffer expects (see nav_map_render.cpp's
+            // header comment), so it's used directly here with no
+            // lv_color_t round-trip - unlike the theme background color
+            // above, which genuinely originates as an lv_color_t.
+            uint16_t color565 = f->colorRgb565;
+
+            if (f->geomType == NAV_GEOM_POLYGON) {
+                bool drawCasing = f->isCasingOrSpecial;
+                uint16_t casingColor = drawCasing ? nav_map_render_darken(f->colorRgb565, 0.35f) : 0;
+                nav_map_render_polygon(tileFeaturePX[i], tileFeaturePY[i], vertCount,
+                                        color565, f->ringCount, f->ringCount > 0 ? f->ringEnds : NULL,
+                                        drawCasing, casingColor);
+            } else {
+                uint8_t widthPx = f->widthPx / 2;  // widthPx is in 0.5px units (nav_tile_format.h)
+                if (widthPx == 0) widthPx = 1;
+                bool drawCasing = f->isCasingOrSpecial;
+                uint16_t casingColor = drawCasing ? nav_map_render_darken(f->colorRgb565, 0.3f) : 0;
+                uint8_t casingWidthPx = widthPx + 2;
+                nav_map_render_line(tileFeaturePX[i], tileFeaturePY[i], vertCount,
+                                     widthPx, color565, drawCasing, casingColor, casingWidthPx);
             }
-            lv_line_set_points(obj, tileFeaturePoints[i], vertCount);
         }
     }
+
+    nav_map_render_end_frame();
 }
 
 // Loads whichever tile now covers (lat, lon), only when that's actually a
@@ -349,10 +382,18 @@ void ui_navScreen_screen_init(void)
     lv_obj_set_style_bg_color(ui_navCanvas, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_navCanvas, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // Map geometry layer - created before the trail/here-dot below so
-    // those always draw on top of it, regardless of when tiles get
-    // (re)loaded later. Transparent so the canvas bg shows through where
-    // there's no tile data (or no card).
+    // Raster map layer (roads/polygons, filled with holes via
+    // nav_map_render.h) - created FIRST so it's the bottommost child;
+    // ui_navTileLayer's point/text objects and the trail/here-dot below
+    // all draw on top of it. Its own background is opaque (the canvas
+    // panel color, painted every frame by nav_map_render_begin_frame())
+    // so it stands in for what used to be ui_navTileLayer's transparent
+    // bg showing the canvas through - no separate transparency needed.
+    nav_map_render_init(ui_navCanvas, CANVAS_W, CANVAS_H);
+
+    // Point/text feature layer - created before the trail/here-dot below
+    // so those still draw on top of it, same reasoning as before.
+    // Transparent so the raster layer beneath shows through.
     ui_navTileLayer = lv_obj_create(ui_navCanvas);
     lv_obj_clear_flag(ui_navTileLayer, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(ui_navTileLayer, CANVAS_W, CANVAS_H);
@@ -439,8 +480,16 @@ void ui_navScreen_refresh_theme(void)
 
 void ui_navScreen_screen_destroy(void)
 {
-    if (ui_navScreen) lv_obj_del(ui_navScreen);  // recursively deletes ui_navTileLayer
-                                                   // and every feature object under it too
+    if (ui_navScreen) lv_obj_del(ui_navScreen);  // recursively deletes ui_navTileLayer,
+                                                   // the raster layer's lv_img, and every
+                                                   // feature object under them too
+
+    // The raster layer's backing sprite lives in nav_map_render.cpp's own
+    // static storage (PSRAM), not owned by LVGL - lv_obj_del() above just
+    // deleted the lv_img object that pointed at it. Free the sprite
+    // itself here, same "explicit teardown, not left to next init()"
+    // discipline as every other driver in this project.
+    nav_map_render_deinit();
 
     ui_navScreen = NULL;
     ui_navCanvas = NULL;
