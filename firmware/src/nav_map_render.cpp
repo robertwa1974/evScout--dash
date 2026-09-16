@@ -2,23 +2,31 @@
 // deliberate deviations from jgauchia/IceNav-v3's lib/maps/src/maps.cpp
 // (pinned tag v.0.2.9, commit d1819b771e12394e185cdf18e8a14875b0998912).
 //
-// COLOR-DEPTH DEVIATION (read before touching fillPolygonGeneral() below -
-// easy to silently get backwards): upstream's fillPolygonGeneral()
-// byte-swaps its direct-buffer fast path
-// (`rawColor = (color >> 8) | (color << 8)`) because TFT_eSPI sprites
-// default to a byte-swapped RGB565 buffer layout (the wire format most
-// SPI TFT panels want). LovyanGFX's LGFX_Sprite defaults to that exact
-// same swapped layout too (color_depth_t::rgb565_2Byte) when you call the
-// plain setColorDepth(16) overload - confirmed by reading
-// LGFX_Sprite.hpp/colortype.hpp, `rgb565_2Byte` converts via `swap565_t`.
-// But this project's LVGL is built with LV_COLOR_16_SWAP 0
-// (firmware/include/lv_conf.h) - host-native RGB565 - and this sprite's
-// buffer is wrapped DIRECTLY as an lv_img_dsc_t's data pointer with no
-// panel-driver step in between to un-swap it (see nav_map_render_init()).
-// So this sprite is explicitly created with the OTHER 16bpp depth,
-// lgfx::rgb565_nonswapped, and the byte-swap is DROPPED from the fill
-// path below - keeping it would silently swap the red/blue channels of
-// every filled polygon on real hardware.
+// COLOR-DEPTH NOTE: this sprite is created with lgfx::rgb565_nonswapped
+// (not upstream's plain setColorDepth(16), which resolves to LovyanGFX's
+// default color_depth_t::rgb565_2Byte) so that a plain R:15-11/G:10-5/
+// B:4-0 uint16_t (this project's NavFeature.colorRgb565 convention
+// everywhere else, and what this project's LVGL build expects too -
+// LV_COLOR_16_SWAP 0, firmware/include/lv_conf.h) can be written directly
+// into fillPolygonGeneral's direct-buffer-pointer fast path below with no
+// byte-swap, and into every other draw call in this file (fillScreen(),
+// drawLine(), drawWideLine(), drawFastHLine()) the normal way - confirmed
+// on real hardware (2026-09-16) by writing a known raw value directly
+// through the fast path and photographing the result.
+//
+// UNRESOLVED (2026-09-16, investigation paused, not abandoned): a real
+// tile's large background/landcover polygon was expected to render as
+// near-white and instead showed as blue/cyan on real hardware. A byte-
+// swap theory was tried and seemed to fit one piece of evidence, but a
+// follow-up hardware test (writing a known raw color with NO swap)
+// contradicted it - the color pipeline itself may be entirely correct,
+// and the visible blue/cyan may simply be a DIFFERENT, legitimately
+// blue/cyan feature (this tile has 298 features total) drawn on top of
+// the near-white one, not a bug at all. Don't re-attempt a byte-swap fix
+// here without first re-checking the full decoded feature list for the
+// actual tile in view. See the separately fixed performance issue below
+// (nav_map_render_line's PERFORMANCE comment) - that one IS confirmed
+// fixed on real hardware, unrelated to this open color question.
 #include "nav_map_render.h"
 #include <LovyanGFX.hpp>
 #include <vector>
@@ -160,7 +168,7 @@ void fillPolygonGeneral(const int *px, const int *py, int numPoints, uint16_t co
                 if (buf) {
                     uint16_t *row = buf + (uint32_t)y * stride + xStart;
                     uint16_t *rowEnd = row + (xEnd - xStart);
-                    while (row < rowEnd) *row++ = color;  // no byte-swap - see file header
+                    while (row < rowEnd) *row++ = color;
                 } else {
                     mapSprite.drawFastHLine(xStart, y, xEnd - xStart, color);
                 }
@@ -179,7 +187,7 @@ lv_obj_t * nav_map_render_init(lv_obj_t * parent, int16_t width, int16_t height)
     canvasH = height;
 
     mapSprite.setPsram(true);
-    mapSprite.setColorDepth(lgfx::rgb565_nonswapped);
+    mapSprite.setColorDepth(lgfx::rgb565_nonswapped);  // see file header comment
     mapSprite.createSprite(width, height);
     edgeBuckets.reserve(height);
 
@@ -239,17 +247,37 @@ void nav_map_render_line(const int *px, const int *py, int numPoints,
                           bool drawCasing, uint16_t casingColor, uint8_t casingWidthPx) {
     if (numPoints < 2) return;
 
-    // drawWideLine's r is a per-side radius (line is 2r+1 px wide) - see
-    // this file's header comment for why LovyanGFX's native wedge-line is
-    // used here instead of porting upstream's drawThickLine().
+    // PERFORMANCE (2026-09-16): drawWideLine() is an anti-aliased wedge
+    // rasterizer - real per-call cost on this hardware, and a real tile
+    // can have on the order of a few hundred LINESTRING segments (casing
+    // doubles that). Calling it for EVERY segment made this screen
+    // effectively freeze (all of it runs inside the same uiMutex-guarded
+    // block touch handling also needs, confirmed on real hardware: the
+    // board stayed alive - other tasks kept running - but the UI stopped
+    // responding for the whole render). Only pay for anti-aliasing where
+    // it's visually worth it (wide major roads); thin residential-street-
+    // width lines (the vast majority of features) use plain drawLine()
+    // (cheap Bresenham, no AA) instead - see this file's header comment
+    // for why drawWideLine() is used here at all instead of porting
+    // upstream's drawThickLine().
+    static constexpr uint8_t WIDE_LINE_THRESHOLD_PX = 3;
     float r = widthPx / 2.0f;
     if (drawCasing) {
         float rCasing = casingWidthPx / 2.0f;
+        for (int i = 1; i < numPoints; i++) {
+            if (casingWidthPx > WIDE_LINE_THRESHOLD_PX)
+                mapSprite.drawWideLine(px[i - 1], py[i - 1], px[i], py[i], rCasing, casingColor);
+            else
+                mapSprite.drawLine(px[i - 1], py[i - 1], px[i], py[i], casingColor);
+        }
+    }
+    if (widthPx > WIDE_LINE_THRESHOLD_PX) {
         for (int i = 1; i < numPoints; i++)
-            mapSprite.drawWideLine(px[i - 1], py[i - 1], px[i], py[i], rCasing, casingColor);
+            mapSprite.drawWideLine(px[i - 1], py[i - 1], px[i], py[i], r, color);
+        return;
     }
     for (int i = 1; i < numPoints; i++)
-        mapSprite.drawWideLine(px[i - 1], py[i - 1], px[i], py[i], r, color);
+        mapSprite.drawLine(px[i - 1], py[i - 1], px[i], py[i], color);
 }
 
 void nav_map_render_end_frame(void) {
