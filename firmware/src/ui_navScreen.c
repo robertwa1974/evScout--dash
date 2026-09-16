@@ -33,7 +33,7 @@
 // ============================================================================
 
 #include "ui.h"
-#include "nav_tile_reader.h"
+#include "nav_reader.h"
 #include <math.h>
 
 lv_obj_t * ui_navScreen = NULL;
@@ -73,14 +73,14 @@ static lv_point_t trailScreenPoints[TRAIL_MAX_POINTS];
 // coordinate system. Deliberately simple for a first pass: only the
 // fixture's line/polygon/text/point feature kinds are handled, only a
 // polygon's OUTER ring is drawn (no holes), and no de-dup/LOD by minZoom -
-// see nav_tile_reader.h's own caps-are-a-guess note, same "buildable now,
+// see nav_reader.h's own caps-are-a-guess note, same "buildable now,
 // revisit once real Tile-Generator output exists" spirit.
 #define NAV_TILE_ZOOM 16  // matches firmware/assets/gen_nav_fixture.py's
                            // fixture; real map data should target this
                            // zoom too until there's a reason to vary it
 
 static NavTileData currentTile;  // ~12KB - static, never a stack local
-                                   // (see nav_tile_reader.h)
+                                   // (see nav_reader.h)
 static bool tileLoaded = false;
 static uint32_t loadedTileX = 0, loadedTileY = 0;
 

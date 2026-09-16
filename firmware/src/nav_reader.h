@@ -7,21 +7,30 @@
 // Decoded-tile interface for the NAV vector tile format (see
 // nav_tile_format.h for the on-disk byte layout and why it's pinned to
 // jgauchia/Tile-Generator tag v.0.9.0). This header is the ONLY thing
-// ui_navScreen.c (or any future renderer) should ever include for map
-// data - it never sees NPK2/NAV1 bytes, varints, or palette indices,
-// only these plain decoded structs. If the upstream format changes,
-// nav_tile_format.h and nav_tile_reader.cpp are the only files that
-// should need to change.
+// any screen/renderer should ever include for map data - it never sees
+// NPK2/NAV1 bytes, varints, or palette indices, only these plain decoded
+// structs. If the upstream format changes, nav_tile_format.h and
+// nav_reader.cpp are the only files that should need to change.
 //
-// Fixed-capacity, no heap allocation - matches this project's existing
-// convention (e.g. dyno_data.h's DynoSample[DYNO_MAX_SAMPLES]) and this
-// MCU's constraints. Caps below are a conservative starting guess for a
-// small personal-route area, NOT verified against real tile density yet
-// (no real Tile-Generator output exists in this repo - see
-// waveshare-dash-build.md). Revisit once real generated tiles exist to
-// measure against. A tile with more features/vertices/rings than the caps
-// allow is NOT an error - it's silently truncated (truncated flag set)
-// rather than corrupting memory or failing the whole tile.
+// Renamed from nav_tile_reader.h (2026-09-15) when the pack/index-lookup
+// portion of nav_tile_load() was replaced internally with a ported
+// jgauchia/IceNav-v3 NavReader class (pinned tag v.0.2.9, commit
+// d1819b771e12394e185cdf18e8a14875b0998912) - see nav_reader.cpp's header
+// comment for what was and wasn't carried over. This PUBLIC interface
+// (function names/signatures, decoded struct shapes) is UNCHANGED on
+// purpose so nothing consuming it needed to change for this swap.
+//
+// Fixed-capacity, no heap allocation for the decoded output structs
+// (matches this project's existing convention, e.g. dyno_data.h's
+// DynoSample[DYNO_MAX_SAMPLES], and this MCU's constraints) - the
+// internal NavReader class DOES use PSRAM heap allocation for its index
+// band cache and color palette, same as upstream. Caps below are a
+// conservative starting guess for a small personal-route area, verified
+// only against real California data's densest tiles so far (see
+// CLAUDE.md's "Map tile format" section) - not an absolute ceiling. A
+// tile with more features/vertices/rings than the caps allow is NOT an
+// error - it's silently truncated (truncated flag set) rather than
+// corrupting memory or failing the whole tile.
 
 #define NAV_MAX_FEATURES_PER_TILE 64
 #define NAV_MAX_VERTICES_PER_FEATURE 32
@@ -73,28 +82,30 @@ typedef struct {
 // MUST be a static/global buffer, never a stack local; this MCU's task
 // stacks are far smaller than that.
 
-// Loads one tile from /maps/Z{zoom}.nav (SD card, mounted by sd_driver.h -
-// checks sd_available() internally). Returns false if: no card mounted,
-// the file for that zoom doesn't exist, (tileX,tileY) falls outside the
-// file's generated bounding box, or the index says that tile slot is
-// empty (offset==0/size==0 - a legitimate "no data here" case, e.g. open
-// water or outside the generated area, not an error) - matches this
-// project's existing "false is fine, just means nothing there" convention
-// (gps_driver.h, imu_driver.h). Does not distinguish those cases in the
-// return value, same reasoning as those drivers: a renderer just needs to
-// know whether it has a tile to draw, not why it doesn't.
+// Loads one tile from the SD card (mounted by sd_driver.h - checks
+// sd_available() internally), from whichever regional file
+// (/maps/Z{zoom}_r{row}_c{col}.nav, NAV_REGION_TILES tiles per file - see
+// nav_tile_format.h) covers (tileX, tileY). Returns false if: no card
+// mounted, the regional file for that area doesn't exist, (tileX,tileY)
+// falls outside its generated bounding box, or the index says that tile
+// slot is empty (offset==0/size==0 - a legitimate "no data here" case,
+// e.g. open water or outside the generated area, not an error) - matches
+// this project's existing "false is fine, just means nothing there"
+// convention (gps_driver.h, imu_driver.h). Does not distinguish those
+// cases in the return value, same reasoning as those drivers: a renderer
+// just needs to know whether it has a tile to draw, not why it doesn't.
 bool nav_tile_load(uint8_t zoom, uint32_t tileX, uint32_t tileY, NavTileData *out);
 
 // Standard OSM/Google "slippy map" tile <-> lat/lon conversions (Web
-// Mercator) - pure math, no SD access. Kept here rather than in
-// ui_navScreen.c since they're defined in terms of this format's own tile
+// Mercator) - pure math, no SD access. Kept here rather than in a
+// renderer since they're defined in terms of this format's own tile
 // numbering/NAV_TILE_EXTENT convention, not renderer-specific.
 //
 // nav_latlon_to_tile: which absolute tile (at the given zoom) contains a
 // GPS fix - used to decide which tile to nav_tile_load().
 // nav_tile_local_to_latlon: the inverse, from one feature vertex's 0-4096
 // local-tile-space coordinate back to real lat/lon - used to project
-// loaded tile geometry into the same lat/lon space ui_navScreen.c's
+// loaded tile geometry into the same lat/lon space a renderer's own
 // breadcrumb trail already projects onto the canvas, so both draw
 // consistently off one projection.
 void nav_latlon_to_tile(uint8_t zoom, double lat, double lon, uint32_t *tileX, uint32_t *tileY);

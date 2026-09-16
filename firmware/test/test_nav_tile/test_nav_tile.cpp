@@ -1,4 +1,4 @@
-// On-device test for nav_tile_reader.cpp against the hand-built fixture
+// On-device test for nav_reader.cpp against the hand-built fixture
 // from firmware/assets/gen_nav_fixture.py (2026-09-14). CANNOT run until
 // the SD card physically exists (arriving 2026-09-15) with that fixture
 // copied onto it at /maps/Z16_r387_c298.nav (regional filename, not a flat
@@ -26,9 +26,9 @@
 #include <SD.h>
 #include "display_driver.h"
 #include "sd_driver.h"
-#include "nav_tile_reader.h"
+#include "nav_reader.h"
 
-static NavTileData tile;  // ~12KB - static, never a stack local (see nav_tile_reader.h)
+static NavTileData tile;  // ~12KB - static, never a stack local (see nav_reader.h)
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -76,7 +76,7 @@ void test_fixture_tile_loads(void) {
     TEST_ASSERT_EQUAL_UINT16(3, tile.featureCount);
 }
 
-static NavTileData otherTile;  // ~12KB - static, never a stack local (see nav_tile_reader.h) -
+static NavTileData otherTile;  // ~12KB - static, never a stack local (see nav_reader.h) -
                                 // an earlier version of this test declared it as a local and
                                 // silently blew the task stack, boot-looping the board with no
                                 // serial output ever reaching UNITY_BEGIN()

@@ -14,9 +14,9 @@
 // docs/bin_tile_format.md AND src/tile_processor.hpp's actual byte-writing
 // code again (they can and did, at least transiently, disagree - see
 // below). If the upstream format changes, only THIS file and
-// nav_tile_reader.cpp should need updating - ui_navScreen.c and everything
+// nav_reader.cpp should need updating - ui_navScreen.c and everything
 // else consumes the decoded TileData/TileFeature structs in
-// nav_tile_reader.h, never these raw bytes.
+// nav_reader.h, never these raw bytes.
 //
 // How this was actually verified (not assumed from the docs alone): read
 // docs/bin_tile_format.md, then read src/tile_processor.hpp's real
@@ -83,7 +83,7 @@ typedef struct {
 // the palette-collapse pass, confirmed against tile_processor.hpp's
 // rewrite loop, not the doc alone. Immediately followed in the byte
 // stream by: varint(coordCount), varint(payloadSize), then payloadSize
-// bytes of payload - see nav_tile_reader.cpp for how those are decoded,
+// bytes of payload - see nav_reader.cpp for how those are decoded,
 // since coordCount and the payload's meaning differ for GEOM_TEXT vs the
 // geometric types (see below).
 typedef struct {
@@ -112,7 +112,7 @@ typedef struct {
 #define NAV_TILE_EXTENT 4096
 
 // NOT part of jgauchia/Tile-Generator's own format - this project's OWN
-// scheme, layered on top of its output (see nav_tile_reader.cpp's
+// scheme, layered on top of its output (see nav_reader.cpp's
 // nav_tile_load()). Tile-Generator emits one NPK2 file per zoom covering
 // its ENTIRE input PBF's bounding box; for a whole-state extract
 // (California, ~1.3GB at zoom 16) that means a single huge file, and the
