@@ -4,6 +4,16 @@
 // Class/method names and the LRU page-cache algorithm are unchanged from
 // upstream. See graph_loader.cpp's header comment for what was adapted
 // and why (SD access layer, routeSpeed parameter).
+//
+// ONE deviation from upstream's own struct layout: cellIndex_ below uses
+// PsramAllocator, upstream (and this port, until 2026-09-16) used the
+// plain default allocator (internal SRAM). That's fine for a country/
+// region-sized extract like upstream's own test data, but a whole-state
+// ROUTE.bin (California CAR profile: 15928 cells x 20 bytes =~ 311KB)
+// exhausted internal heap already under pressure from LVGL's double draw
+// buffers, WiFi/BT, and task stacks, and crashed on real hardware.
+// PSRAM (8MB via board_build.psram_type=opi) has ample room - moved
+// cellIndex_ there, matching PageData's nodes/edges below.
 #pragma once
 #include <cstdint>
 #include <vector>
@@ -43,7 +53,7 @@ private:
                         std::hash<uint32_t>, std::equal_to<uint32_t>,
                         PsramAllocator<std::pair<const uint32_t, PageData>>>;
 
-    std::vector<CellIndexEntry> cellIndex_;
+    std::vector<CellIndexEntry, PsramAllocator<CellIndexEntry>> cellIndex_;
     mutable PageMap pageCache_;
     mutable uint32_t lru_clock_ = 0;
 

@@ -221,6 +221,24 @@ static void buildTileLayer(void) {
 // raster frame on top of the tile geometry - called from
 // repositionTileLayer() once per frame, after all tile features. No-op if
 // no route has been computed yet.
+//
+// widthPx MUST stay <= nav_map_render.cpp's WIDE_LINE_THRESHOLD_PX (3).
+// A real hardware crash (2026-09-16) traced via decoded backtrace to
+// exactly this call at widthPx=5: repositionTileLayer()/drawRouteLine()
+// runs inside ui_navScreen_addPoint(), which runs inside
+// zombie_updaters.cpp's slowUpdate() - a Ticker/esp_timer callback with a
+// small, fixed stack. width>3 sends nav_map_render_line() down
+// LovyanGFX's anti-aliased drawWideLine() path (drawWideLine ->
+// draw_wedgeline -> draw_gradient_wedgeline -> fillRectAlpha ->
+// writeFillRectAlphaPreclipped -> IPanel::effect<>), a deep templated
+// call chain that overflowed that stack (Guru Meditation,
+// InstrFetchProhibited, backtrace terminating at the classic 0xfffffffd
+// sentinel) the first time a real multi-point route (93 waypoints) was
+// drawn - tile road/casing features already stay under this same
+// threshold in practice, which is why this was never hit before. Do not
+// raise this past 3 without first moving the route-line draw out of
+// Ticker context (same pending-flag-serviced-from-loop() pattern already
+// used for nav_tile_load()/Router::route()).
 static void drawRouteLine(double curLat, double curLon, double cosLat) {
     if (navRoute.empty()) return;
 
@@ -238,7 +256,7 @@ static void drawRouteLine(double curLat, double curLon, double cosLat) {
     }
 
     uint16_t routeColor565 = lv_color_to16(ui_theme_accent());
-    nav_map_render_line(routePX, routePY, n, /*widthPx=*/5, routeColor565,
+    nav_map_render_line(routePX, routePY, n, /*widthPx=*/3, routeColor565,
                          /*drawCasing=*/false, 0, 0);
 }
 
