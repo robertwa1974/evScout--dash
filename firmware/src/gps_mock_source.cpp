@@ -14,16 +14,33 @@
 //
 // Route: a small canned rectangular loop (roughly 500m x 440m) so the nav
 // screen's breadcrumb trail has turns to render, not just a straight line.
-// Coordinates are centered on real downtown San Francisco (Union Square
-// area, 2026-09-15 - previously an arbitrary Pennsylvania-ish point with
-// no real map data anywhere near it) so this build also exercises
-// ui_navScreen.c's NAV vector tile renderer against the real California
-// Tile-Generator output on /maps/Z16.nav (see CLAUDE.md's "Map tile
-// format" section), not just the trail line - the exact tile at this
-// base point was confirmed non-empty on real hardware before picking it.
-// Deltas below are still simple hand-picked offsets, not computed from
-// meters - precision doesn't matter here, only that consecutive points
-// are a plausible ~1 Hz driving cadence apart.
+//
+// Relocated 2026-09-18 from downtown San Francisco to Encinitas, CA
+// (~3.3km from HOME_LAT/HOME_LON in ui_navScreen.cpp - 1377 Calle Scott,
+// 92024) specifically so the new "phone home" button's Router::route()
+// call has a realistic LOCAL destination to test against. The SF-based
+// route (loaded from ~840km away) was a genuine problem, not just a slow
+// test: GraphLoader's page cache (PAGE_CACHE_MAX=48 cells) had to hold
+// nodes/edges from cells scattered the length of the state, and the A*
+// search ran for 13+ minutes on real hardware without finishing or
+// crashing - almost certainly LRU cache thrashing (repeatedly evicting
+// and re-reading the same distant cells from SD) rather than genuine
+// progress. A real driver only ever presses "Home" from somewhere
+// reasonably close to home, so this mismatch was a test-harness problem,
+// not a real usage scenario - fixing the mock route's location to match
+// how the feature is actually used, not tuning the router around an
+// unrealistic worst case.
+//
+// Same hand-picked (not meters-computed) delta pattern as the original
+// SF loop, just re-centered - precision doesn't matter here, only that
+// consecutive points are a plausible ~1 Hz driving cadence apart and
+// this exercises the same NAV vector tile renderer against real
+// California Tile-Generator output (see CLAUDE.md's "Map tile format"
+// section). Covered by the same whole-state california-latest.osm.pbf
+// generation as the old SF point (so NAV tiles/ROUTE.bin should exist
+// here too), but this exact base tile hasn't been individually spot-
+// checked the way the SF one originally was - first real hardware flash
+// against this location IS that check.
 #include "gps_driver.h"
 #include "mutex.h"
 #include <Arduino.h>
@@ -35,29 +52,29 @@ struct MockPoint { double lat, lon; float speedKph, headingDeg; };
 // Real coordinates now (see file header) - kept as named constants since
 // gps_init()/gps_poll() below read from MOCK_ROUTE[], not these directly;
 // documents what the route is centered on.
-#define MOCK_BASE_LAT 37.77490
-#define MOCK_BASE_LON -122.41940
+#define MOCK_BASE_LAT 33.06000
+#define MOCK_BASE_LON -117.25000
 static const MockPoint MOCK_ROUTE[] = {
-    {37.77490, -122.41940,  0, 0},
-    {37.77580, -122.41940, 25, 0},    // heading north, speeding up
-    {37.77670, -122.41940, 45, 0},
-    {37.77760, -122.41940, 45, 0},
-    {37.77850, -122.41940, 30, 0},
-    {37.77940, -122.41940, 15, 350},  // slowing into the corner
-    {37.77940, -122.42060, 20, 270},  // heading west
-    {37.77940, -122.42180, 40, 270},
-    {37.77940, -122.42300, 40, 270},
-    {37.77940, -122.42420, 25, 260},
-    {37.77850, -122.42440, 15, 190},  // corner
-    {37.77760, -122.42440, 30, 180},  // heading south
-    {37.77670, -122.42440, 45, 180},
-    {37.77580, -122.42440, 45, 180},
-    {37.77490, -122.42440, 20, 170},
-    {37.77490, -122.42320, 25, 90},   // corner, heading east
-    {37.77490, -122.42200, 40, 90},
-    {37.77490, -122.42080, 35, 90},
-    {37.77490, -122.41980, 15, 80},
-    {37.77490, -122.41940,  5, 45},   // back near the start
+    {33.06000, -117.25000,  0, 0},
+    {33.06090, -117.25000, 25, 0},    // heading north, speeding up
+    {33.06180, -117.25000, 45, 0},
+    {33.06270, -117.25000, 45, 0},
+    {33.06360, -117.25000, 30, 0},
+    {33.06450, -117.25000, 15, 350},  // slowing into the corner
+    {33.06450, -117.25120, 20, 270},  // heading west
+    {33.06450, -117.25240, 40, 270},
+    {33.06450, -117.25360, 40, 270},
+    {33.06450, -117.25480, 25, 260},
+    {33.06360, -117.25500, 15, 190},  // corner
+    {33.06270, -117.25500, 30, 180},  // heading south
+    {33.06180, -117.25500, 45, 180},
+    {33.06090, -117.25500, 45, 180},
+    {33.06000, -117.25500, 20, 170},
+    {33.06000, -117.25380, 25, 90},   // corner, heading east
+    {33.06000, -117.25260, 40, 90},
+    {33.06000, -117.25140, 35, 90},
+    {33.06000, -117.25040, 15, 80},
+    {33.06000, -117.25000,  5, 45},   // back near the start
 };
 #define MOCK_ROUTE_LEN (sizeof(MOCK_ROUTE) / sizeof(MOCK_ROUTE[0]))
 #define MOCK_TICK_MS 1000  // matches real GPS's ~1Hz fix cadence

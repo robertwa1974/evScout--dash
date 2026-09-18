@@ -26,6 +26,15 @@ extern void ui_navScreen_screen_destroy(void);
 extern void ui_event_navScreen(lv_event_t * e);
 extern void ui_navScreen_refresh_theme(void);
 
+// The "phone home" button's click handler - the sole routing trigger on
+// this screen (see ui_navScreen.cpp's header comment: routing is a fixed,
+// hardcoded destination, not general nav, and computes only on this
+// button press, never automatically). Cheap to call from LVGL's own
+// input-handling context (already under uiMutex) - it only sets a
+// pending-flag; the actual blocking Router::route() call still happens
+// in ui_navScreen_processPendingRoute() from firmware.ino's loop().
+extern void ui_event_navHomeBtn(lv_event_t * e);
+
 // Appends the given fix to the trail history and redraws it, if the screen
 // has been created (no-op otherwise, matching this codebase's convention
 // of not doing work for screens nobody has visited yet - see the null

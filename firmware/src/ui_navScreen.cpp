@@ -22,17 +22,19 @@
 // nav_turn.h) use real Haversine distance instead - only the on-screen
 // pixel projection uses this flat-earth shortcut.
 //
-// Routing (component 5): no destination-entry UI exists yet in this
-// project (no address search, no long-press-to-set) - out of scope for
-// this pass, a real gap flagged and explicitly deferred rather than
-// silently worked around. NAV_TEST_DEST_LAT/LON below is a hardcoded
-// placeholder destination, same "dev-aid, not the real feature" spirit as
-// gps_mock_source.cpp's canned route. Router::route() needs a real
-// ROUTE.bin (CAR profile) on the SD card to succeed - if that file
-// doesn't exist yet, routing fails gracefully (RouterResult != OK) and
-// this screen just shows its map/trail with no route line and "NO ROUTE"
-// in the turn banner, same "false is fine, just means nothing there"
-// convention nav_tile_load() already uses.
+// Routing (2026-09-16 - scope narrowed from "general nav" to "get me
+// home"): a full destination-entry UI (address search, long-press-to-set)
+// is real scope this project isn't taking on - the actual, explicitly
+// requested feature is a single "Home" button that routes back to one
+// fixed, hardcoded location (HOME_LAT/HOME_LON below), not navigation to
+// anywhere. This is a real simplification, not a placeholder: no
+// destination search UI is planned, ever. Routing is button-TRIGGERED
+// (ui_event_navHomeBtn), not automatic on screen open - see that
+// handler's comment. Router::route() needs a real ROUTE.bin (CAR
+// profile) on the SD card to succeed - if that file doesn't exist yet,
+// routing fails gracefully (RouterResult != OK) and the turn banner shows
+// "NO ROUTE", same "false is fine, just means nothing there" convention
+// nav_tile_load() already uses.
 //
 // No SquareLine project (same as every other hand-written screen here).
 //
@@ -60,6 +62,8 @@ lv_obj_t * ui_navScreen = NULL;
 static lv_obj_t * ui_navTopBar = NULL;
 lv_obj_t * ui_navClockLabel = NULL;
 lv_obj_t * ui_navSocLabel = NULL;
+static lv_obj_t * ui_navHomeBtn = NULL;
+static lv_obj_t * ui_navHomeBtnLabel = NULL;
 
 static lv_obj_t * ui_navCanvas = NULL;
 static lv_obj_t * ui_navTileLayer = NULL;  // map geometry - created before
@@ -127,13 +131,13 @@ static lv_obj_t * tileFeatureObjs[NAV_MAX_FEATURES_PER_TILE];
 static int tileFeaturePX[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
 static int tileFeaturePY[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
 
-// --- Routing (component 5) ---
-// Hardcoded placeholder destination - see this file's header comment for
-// why. Ferry Building, San Francisco - a real, driveable landmark inside
-// the generated California NAV tile/ROUTE.bin coverage area, ~4.3km from
-// gps_mock_source.cpp's canned route start near Hayes Valley.
-#define NAV_TEST_DEST_LAT 37.7955
-#define NAV_TEST_DEST_LON -122.3937
+// --- Routing: "phone home" (see this file's header comment for scope) ---
+// 1377 Calle Scott, Encinitas, CA 92024 - geocoded via OpenStreetMap's
+// Nominatim (fitting, since NAVMAP/ROUTE.bin are both OSM-derived data
+// already), not GPS-surveyed - good enough for road-level routing, not
+// meant to be a rooftop-accurate point.
+#define HOME_LAT 33.0304742
+#define HOME_LON -117.2533789
 #define NAV_ROUTE_SPEED_KMH 60  // selects the CAR ROUTE.bin profile - see routeBinPath()
 
 #define NAV_ROUTE_MAX_POINTS 300  // cap for on-screen route line drawing -
@@ -148,10 +152,16 @@ static int routePY[NAV_ROUTE_MAX_POINTS];
 static TrackVector navRoute;
 static TurnPointVector navTurns;
 static NavState navState;
-static bool routeReady = false;     // true once navRoute has been computed
-                                      // (successfully or not - see
-                                      // processPendingRoute())
-static bool routeComputePending = false;
+static bool routeComputePending = false;  // set by the Home button, serviced
+                                            // from loop() - see
+                                            // ui_navScreen_processPendingRoute()
+static bool routeComputing = false;   // true from button press until
+                                        // processPendingRoute() finishes -
+                                        // lets updateTurnGuidance() show a
+                                        // "ROUTING HOME..." state instead of
+                                        // "NO ROUTE" during the multi-second
+                                        // (sometimes 20+s, see this file's
+                                        // header) blocking computation
 static double routeComputeLat = 0, routeComputeLon = 0;
 
 // RGB565 -> lv_color_t without assuming lv_color_t's internal union layout
@@ -407,10 +417,13 @@ void ui_navScreen_processPendingTileLoad(void) {
     loadTile(tx, ty, pendingLat, pendingLon);
 }
 
-// Flags a one-time route computation on the first fix after this screen
-// opens - never blocks here, see ui_navScreen_processPendingRoute().
-static void updateNavRoute(double lat, double lon) {
-    if (routeReady) return;
+// Flags a route computation toward HOME - never blocks here, see
+// ui_navScreen_processPendingRoute(). Called only from the Home button's
+// click handler (ui_event_navHomeBtn), not automatically on every fix -
+// see this file's header comment for why routing is button-triggered.
+static void requestRouteHome(double lat, double lon) {
+    if (routeComputing) return;  // already routing - ignore a double-tap
+    routeComputing = true;
     routeComputePending = true;
     routeComputeLat = lat;
     routeComputeLon = lon;
@@ -419,13 +432,10 @@ static void updateNavRoute(double lat, double lon) {
 void ui_navScreen_processPendingRoute(void) {
     if (!routeComputePending) return;
     routeComputePending = false;
-    if (!ui_navScreen) return;  // screen closed before this got serviced
+    if (!ui_navScreen) { routeComputing = false; return; }  // screen closed before this got serviced
 
-    routeReady = true;  // set regardless of outcome - don't keep retrying
-                          // every fix if routing genuinely has no data
-                          // (see this file's header comment)
     RouterResult result = router.route((float)routeComputeLat, (float)routeComputeLon,
-                                        (float)NAV_TEST_DEST_LAT, (float)NAV_TEST_DEST_LON,
+                                        (float)HOME_LAT, (float)HOME_LON,
                                         NAV_ROUTE_SPEED_KMH, navRoute);
     if (result == RouterResult::OK && !navRoute.empty()) {
         navTurns = nav_turn_detect(navRoute);
@@ -434,6 +444,7 @@ void ui_navScreen_processPendingRoute(void) {
         navTurns.clear();
     }
     navState = NavState{};
+    routeComputing = false;
 }
 
 // Maps a TurnDirection to its icon glyph - NONE case (OFF_TRACK, or no
@@ -463,7 +474,7 @@ static void updateTurnGuidance(double lat, double lon, float speedKph) {
 
     if (navRoute.empty()) {
         lv_label_set_text(ui_navTurnIconLabel, TURN_ICON_STRAIGHT);
-        lv_label_set_text(ui_navTurnDistLabel, "NO ROUTE");
+        lv_label_set_text(ui_navTurnDistLabel, routeComputing ? "ROUTING HOME..." : "PRESS HOME");
         if (ui_navEtaLabel) lv_label_set_text(ui_navEtaLabel, "ETA --:--");
         if (ui_navDistRemainingLabel) lv_label_set_text(ui_navDistRemainingLabel, "-- remaining");
         return;
@@ -524,6 +535,18 @@ void ui_event_navScreen(lv_event_t * e)
     }
 }
 
+// The "phone home" button - the entire routing trigger for this screen
+// (see this file's header comment for why there's no destination-entry
+// UI). Ignores the tap with no visible state change if there's no GPS fix
+// yet (routing from (0,0) would be meaningless) or a route is already
+// being computed (requestRouteHome() itself also guards this, but
+// checking here too avoids even queuing a redundant SD-bound request).
+void ui_event_navHomeBtn(lv_event_t * e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (!gpsData.hasFix || routeComputing) return;
+    requestRouteHome(gpsData.latitude, gpsData.longitude);
+}
+
 // Recomputes every trail point's screen position relative to the CURRENT
 // fix (the most recently written point) and updates the line widget.
 // Called after every ui_navScreen_addPoint() - trailCount is at most 120,
@@ -568,9 +591,9 @@ void ui_navScreen_addPoint(double lat, double lon) {
     updateNavTile(lat, lon);
     repositionTileLayer(lat, lon, cos(lat * M_PI / 180.0));
 
-    // Routing: flags a one-time compute, never blocks here either - see
-    // updateNavRoute()'s comment.
-    updateNavRoute(lat, lon);
+    // Routing is button-triggered now (ui_event_navHomeBtn), not computed
+    // automatically here - see this file's header comment. Turn guidance
+    // still updates every fix so it tracks progress once a route exists.
     updateTurnGuidance(lat, lon, gpsData.speedKph);
 }
 
@@ -662,6 +685,39 @@ void ui_navScreen_screen_init(void)
     lv_label_set_text_fmt(ui_navScaleLabel, "~%.0fm across - no map tiles yet", CANVAS_W * METERS_PER_PIXEL);
     lv_obj_set_style_text_color(ui_navScaleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_navScaleLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    // "Phone home" button - the sole routing trigger on this screen (see
+    // this file's header comment). Sized to this project's own vehicle-
+    // context touch-target minimum (CLAUDE.md's Settings section: ~80px/
+    // ~15mm for standard controls).
+    //
+    // Position history, both found via a decoded touch-event trace on
+    // real hardware (2026-09-18), not guessed:
+    // 1. Originally centered in the thin 32px top status bar - completely
+    //    unreachable; real taps landed 35-40px below the button itself.
+    // 2. Moved to the map canvas's top-RIGHT corner - also completely
+    //    unreachable, but for a different reason: taps in that screen
+    //    region produced NO touch event at all (not even bubbling to the
+    //    screen root), confirmed by repeated deliberate taps at the
+    //    confirmed-correct on-screen location - a real touch-panel
+    //    dead zone near that edge, not a widget/hit-testing bug.
+    // Landed here instead - horizontally centered (TOP_MID), directly
+    // below the turn banner - because a tap at this same horizontal
+    // center (~x=398, near vertical center of the top bar/canvas
+    // boundary) DID register correctly during the same trace. Reusing
+    // screen real estate already proven touch-responsive beats guessing
+    // at another untested corner.
+    ui_navHomeBtn = lv_btn_create(ui_navCanvas);
+    lv_obj_set_size(ui_navHomeBtn, 200, 84);
+    lv_obj_align(ui_navHomeBtn, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_radius(ui_navHomeBtn, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_navHomeBtn, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_navHomeBtnLabel = lv_label_create(ui_navHomeBtn);
+    lv_label_set_text(ui_navHomeBtnLabel, LV_SYMBOL_HOME "\nHOME");
+    lv_obj_set_style_text_align(ui_navHomeBtnLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navHomeBtnLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_center(ui_navHomeBtnLabel);
+    lv_obj_add_event_cb(ui_navHomeBtn, ui_event_navHomeBtn, LV_EVENT_CLICKED, NULL);
 
     // --- Turn-instruction banner, overlaid near the top of the map ---
     ui_navTurnBanner = lv_obj_create(ui_navCanvas);
@@ -761,6 +817,7 @@ void ui_navScreen_refresh_theme(void)
 
     lv_obj_set_style_bg_color(ui_navScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navTopBar) lv_obj_set_style_bg_color(ui_navTopBar, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    if (ui_navHomeBtn) lv_obj_set_style_bg_color(ui_navHomeBtn, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navCanvas) lv_obj_set_style_bg_color(ui_navCanvas, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navTrailLine) lv_obj_set_style_line_color(ui_navTrailLine, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navHereDot) lv_obj_set_style_border_color(ui_navHereDot, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -825,10 +882,14 @@ void ui_navScreen_screen_destroy(void)
     for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) tileFeatureObjs[i] = NULL;
     tileLoaded = false;
 
-    // Force a fresh route computation next time the screen opens too.
+    // Drop any route - the Home button on next open starts fresh, same
+    // "don't carry stale nav state across screen visits" reasoning as the
+    // trail/tile state cleared above.
     navRoute.clear();
     navTurns.clear();
     navState = NavState{};
-    routeReady = false;
     routeComputePending = false;
+    routeComputing = false;
+    ui_navHomeBtn = NULL;
+    ui_navHomeBtnLabel = NULL;
 }
