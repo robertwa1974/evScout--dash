@@ -27,8 +27,8 @@ def glyph_id_for(cp):
     return None
 
 
-def render(size, out_path):
-    data = build_size(size)
+def render(size, weight_name, out_path):
+    data = build_size(size, weight_name)
     glyphs = data["glyphs"]
     line_height = data["line_height"]
     ascent = data["ascent"]
@@ -66,4 +66,7 @@ def render(size, out_path):
 if __name__ == "__main__":
     out_dir = Path(__file__).parent
     for size in (16, 24, 32, 48):
-        render(size, out_dir / f"preview_{size}.png")
+        render(size, "ExtraBold", out_dir / f"preview_extrabold_{size}.png")
+    # SemiBold only baked at the two label-role sizes - see convert_font.py's WEIGHTS.
+    for size in (16, 24):
+        render(size, "SemiBold", out_dir / f"preview_semibold_{size}.png")

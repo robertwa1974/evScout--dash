@@ -13,6 +13,7 @@ typedef struct {
     uint32_t warning;
     uint32_t good;
     uint32_t bad;
+    uint32_t dim;
 } ui_palette_t;
 
 // Colors only now - backlight is tracked separately per mode below (see
@@ -38,6 +39,12 @@ static const ui_palette_t kPaletteDay = {
     .warning       = 0xFF3B30,
     .good          = 0x34C759,
     .bad           = 0xFF9500,
+    // "No data yet" gray - readable on both panelBg (#262626) and bg
+    // (#1A1A1A), clearly distinct from textSecondary (#B0B0B0, too close
+    // to textPrimary to read as "absent") and panelBorder (#444444,
+    // already the neutral-pill background - a different concept, see
+    // ui_theme.h's comment on this getter).
+    .dim           = 0x6B6B6B,
 };
 
 // Night: low-glare, amber-shifted to preserve dark adaptation (classic
@@ -59,6 +66,11 @@ static const ui_palette_t kPaletteNight = {
     .warning       = 0xB30000,
     .good          = 0x1F7A1F,
     .bad           = 0x995200,
+    // Muted, desaturated amber-gray rather than a true neutral gray - stays
+    // in the amber family (same dark-adaptation reasoning as the rest of
+    // this palette) while still reading as "dimmer/absent" against
+    // textPrimary's #B35900.
+    .dim           = 0x4D2E00,
 };
 
 static ui_theme_mode_t currentMode = UI_THEME_DAY;
@@ -107,6 +119,18 @@ void ui_theme_set(ui_theme_mode_t mode) {
     if (ui_splashScreen != NULL) {
         ui_splashScreen_refresh_theme();
     }
+    // These two were missing from this guard list until 2026-09-18 (both
+    // refresh_theme() functions have existed since the dyno screens were
+    // built, just never wired in here) - a real pre-existing gap: day/
+    // night toggle silently never repainted Dyno Live/Results. Found while
+    // adding the dock's per-screen refresh_theme hook (styling pass), not
+    // something the dock itself needed to introduce.
+    if (ui_dynoLiveScreen != NULL) {
+        ui_dynoLiveScreen_refresh_theme();
+    }
+    if (ui_dynoResultsScreen != NULL) {
+        ui_dynoResultsScreen_refresh_theme();
+    }
 }
 
 ui_theme_mode_t ui_theme_get(void) {
@@ -151,3 +175,4 @@ lv_color_t ui_theme_accent_energy(void)  { return lv_color_hex(active()->accentE
 lv_color_t ui_theme_warning(void)        { return lv_color_hex(active()->warning); }
 lv_color_t ui_theme_good(void)           { return lv_color_hex(active()->good); }
 lv_color_t ui_theme_bad(void)            { return lv_color_hex(active()->bad); }
+lv_color_t ui_theme_dim(void)            { return lv_color_hex(active()->dim); }

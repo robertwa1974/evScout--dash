@@ -19,15 +19,15 @@
 //        haven't been built yet).
 //
 // Touch targets: buttons are 84px (>=80px minimum per CLAUDE.md).
-// Navigation: physical swipe RIGHT -> Speed screen (the HOME screen since
-// the 2026-09-14 Speed/Drive/Status/Battery split - unchanged behavior,
-// just a renamed target), physical swipe LEFT -> Splash/Clock screen (new
-// 2026-09-14 - this screen previously only handled one direction; the
-// other was genuinely unused until the Splash/Clock screen existed to
-// swipe to). This board reports gesture direction inverted from the
-// physical swipe - see CLAUDE.md's "Touch gesture direction" - so the
-// code checks LV_DIR_LEFT for the physical-RIGHT swipe and LV_DIR_RIGHT
-// for the physical-LEFT swipe. Intentional; don't "fix" it.
+// Navigation (styling/UX pass Phase 5, 2026-09-18): physical swipe RIGHT
+// to Speed is REMOVED - Settings is a standalone dock destination now
+// (see ui_dock.h's mapping comment and the plan's swipe-removal table).
+// Physical swipe LEFT to Splash/Clock STAYS - Splash sits outside the dock
+// system entirely (confirmed with Rob), so this bookend link is
+// unaffected by the dock restructure. This board reports gesture
+// direction inverted from the physical swipe - see CLAUDE.md's "Touch
+// gesture direction" - so the code checks LV_DIR_RIGHT for the physical-
+// LEFT swipe. Intentional; don't "fix" it.
 // ============================================================================
 
 #include "zombie_updaters.h"  // warningSet, updateWarningsSet, displayPref, applyDisplayMode - includes ui.h
@@ -51,6 +51,10 @@ static lv_obj_t * autoBtn = NULL;
 static lv_obj_t * dayBtn = NULL;
 static lv_obj_t * nightBtn = NULL;
 static lv_obj_t * brightnessSlider = NULL;
+
+// Persistent bottom nav dock (styling/UX pass Phase 5, 2026-09-18) - see
+// ui_dock.h. Settings is its own standalone dock group.
+static lv_obj_t * ui_settingsScreenDock = NULL;
 
 #define ROW_HEIGHT    100
 #define STEPPER_BTN   84
@@ -84,11 +88,8 @@ void ui_event_settingsScreen(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
 
-    if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_LEFT) {
-        lv_indev_wait_release(lv_indev_get_act());
-        _ui_screen_change(&ui_speedScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_speedScreen_screen_init);
-        _ui_screen_delete(&ui_settingsScreen);
-    }
+    // Physical-RIGHT swipe to Speed REMOVED here - see this file's header
+    // comment (styling/UX pass Phase 5).
     // Previously unused direction on this screen - wired 2026-09-14 to the
     // new Splash/Clock screen, completing the loop: Splash/Clock <->
     // Settings <-> Speed(home) <-> ... See ui_splashScreen.c's header
@@ -262,7 +263,12 @@ void ui_settingsScreen_screen_init(void)
     lv_obj_set_style_bg_opa(ui_settingsScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     menu = lv_menu_create(ui_settingsScreen);
-    lv_obj_set_size(menu, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+    // Height reduced by UI_DOCK_H (styling/UX pass Phase 5, 2026-09-18) to
+    // leave room for the persistent bottom nav dock - lv_menu's page is
+    // internally scrollable, so this is just less visible height at once,
+    // not a clipping risk the way the fixed-position screens elsewhere in
+    // this codebase are.
+    lv_obj_set_size(menu, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL) - UI_DOCK_H);
     lv_menu_set_mode_root_back_btn(menu, LV_MENU_ROOT_BACK_BTN_DISABLED);  // physical swipe RIGHT goes back, no in-menu back button needed
     lv_obj_set_style_bg_color(menu, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -387,6 +393,10 @@ void ui_settingsScreen_screen_init(void)
 
     lv_menu_set_page(menu, page);
 
+    // Sibling of the menu, not a child of it - stays fixed at the bottom
+    // regardless of the menu's own internal scroll position.
+    ui_settingsScreenDock = ui_dock_create(ui_settingsScreen, UI_DOCK_SETTINGS);
+
     // Gesture handler on both the screen AND the menu itself: lv_menu's
     // page fills the whole screen and is a scroll target, so a swipe might
     // be delivered to the menu rather than bubbling to the screen object -
@@ -416,6 +426,7 @@ void ui_settingsScreen_refresh_theme(void)
         lv_obj_set_style_bg_color(brightnessSlider, ui_theme_accent(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(brightnessSlider, ui_theme_accent(), LV_PART_KNOB | LV_STATE_DEFAULT);
     }
+    ui_dock_refresh_theme(ui_settingsScreenDock, UI_DOCK_SETTINGS);
     // Section header labels, row title labels, and the +/-/default/cal
     // button chrome are left as their creation-time colors here - this
     // screen is dense enough that a full re-walk on every toggle isn't
@@ -441,4 +452,5 @@ void ui_settingsScreen_screen_destroy(void)
     dayBtn = NULL;
     nightBtn = NULL;
     brightnessSlider = NULL;
+    ui_settingsScreenDock = NULL;
 }

@@ -41,6 +41,12 @@ void ui_init(void)
     ui_splashScreen_screen_init();
     ui____initial_actions0 = lv_obj_create(NULL);
     lv_disp_load_scr(ui_splashScreen);
+
+    // Global fault banner (styling/UX pass Phase 7, 2026-09-18) - one
+    // instance for the whole app's lifetime, on lv_layer_top() so it
+    // floats above whatever screen is active, hidden until a real fault
+    // fires. See ui_fault_banner.h.
+    ui_fault_banner_init();
 }
 
 void ui_destroy(void)

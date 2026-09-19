@@ -15,6 +15,12 @@ extern "C" {
 #include "ui_helpers.h"
 #include "ui_events.h"
 #include "ui_theme.h"
+#include "ui_card_grid.h"
+#include "ui_status_pill.h"
+#include "ui_press_feedback.h"
+#include "ui_empty_state.h"
+#include "ui_dock.h"
+#include "ui_fault_banner.h"
 
 
 ///////////////////// SCREENS ////////////////////
@@ -60,6 +66,14 @@ extern lv_obj_t * ui____initial_actions0;
 #include "font_montserrat_extrabold_32.h"
 #include "font_montserrat_extrabold_48.h"
 
+// 2026-09-18 (styling pass, item 1): a second, lighter SemiBold weight for
+// card labels/titles - bold values, lighter labels, so a value doesn't
+// have to fight its own label for visual weight. Only baked at 16/24px
+// (the two label-role tiers - see convert_font.py's WEIGHTS comment); no
+// 32/48px SemiBold exists because nothing at those sizes is ever a label.
+#include "font_montserrat_semibold_16.h"
+#include "font_montserrat_semibold_24.h"
+
 // 2026-09-14: small custom icon set (bolt/thermostat/location_on/
 // navigation/speed, firmware/assets/convert_icons.py, from Google's
 // Material Icons) for panel titles that benefit from an at-a-glance
@@ -76,6 +90,13 @@ extern lv_obj_t * ui____initial_actions0;
 // used standalone rather than chained through text - see
 // convert_turn_icons.py's header comment for why.
 #include "font_turn_icons_48.h"
+
+// Bottom navigation dock icons (styling/UX pass, 2026-09-18) - a THIRD,
+// 32px icon font, standalone like the turn icons (not chained through
+// body text) but a different size for the dock's own >=64px touch-target
+// scale - see convert_dock_icons.py's header comment for why this isn't
+// just a bigger render of font_icons_20's glyphs.
+#include "font_dock_icons_32.h"
 
 // UI INIT
 void ui_init(void);

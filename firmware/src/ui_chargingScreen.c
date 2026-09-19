@@ -43,15 +43,20 @@
 // dataMutex-then-uiMutex pattern as every other binding - all these fields
 // are genuinely slow-changing, no need for the fast/mid tiers).
 //
-// Navigation, following the current topology (Settings <-> Speed(home) <->
-// Drive <-> Status <-> Battery <-> Charging <-> GPS <-> Dyno LIVE -> Dyno
-// RESULTS - GPS inserted 2026-09-14 between Charging and Dyno LIVE):
-// physical swipe LEFT -> Battery (back), physical swipe RIGHT -> GPS
-// (forward, was Dyno LIVE before GPS was inserted). This board reports
-// gesture direction inverted from the physical swipe (see CLAUDE.md's
-// "Touch gesture direction") - the code checks LV_DIR_RIGHT for the
-// physical-LEFT swipe and LV_DIR_LEFT for the physical-RIGHT swipe.
-// Intentional; don't "fix" it without re-verifying on hardware first.
+// Navigation (styling/UX pass Phase 5, 2026-09-18): this screen's two
+// former swipe neighbors (Battery/BMS, GPS) were both OTHER dock groups -
+// physical-RIGHT swipe (was -> Battery) and physical-LEFT swipe (was ->
+// GPS) are both REMOVED, cross-group links the dock now owns. But
+// Charging's OWN dock group is Telemetry (Speed/Drive/Status), and it had
+// no swipe link to any of those before (its old neighbors were Battery/
+// GPS, not Status) - without a real replacement, Charging would become
+// unreachable by swipe from its own group entirely (the dock's Telemetry
+// icon only lands on Speed). Fixed by giving this screen a NEW physical-
+// LEFT swipe back to Status (ui_statusScreen.c's forward link was
+// similarly retargeted from Battery to here) - Speed<->Drive<->Status<->
+// Charging is now the real intra-Telemetry swipe chain, matching the
+// dock's own grouping for the first time. See ui_dock.h's mapping comment
+// and the plan's swipe-removal table.
 // ============================================================================
 
 #include "ui.h"
@@ -72,6 +77,9 @@ lv_obj_t * ui_chargingStatusPanel = NULL;
 lv_obj_t * ui_chargingStatusPill = NULL;
 lv_obj_t * ui_chargingStatusLabel = NULL;
 lv_obj_t * ui_chargingPlugLabel = NULL;
+// Tracks the pill's current semantic state for refresh_theme() - see
+// ui_gpsScreen.c's identical pattern/comment for why.
+static ui_pill_state_t ui_chargingStatusPillState = UI_PILL_NEUTRAL;
 
 lv_obj_t * ui_chargingSetpointPanel = NULL;
 lv_obj_t * ui_chargingSetpointValLabel = NULL;
@@ -90,67 +98,37 @@ lv_obj_t * ui_chargingLimValLabel = NULL;
 lv_obj_t * ui_chargingLimBar = NULL;
 lv_obj_t * ui_chargingCableLimLabel = NULL;
 
-#define GRID_PANEL_W 388
-#define GRID_PANEL_H 149
-#define GRID_GAP     8
+// Persistent bottom nav dock (styling/UX pass Phase 5, 2026-09-18) - see
+// ui_dock.h. Charging is inside the Telemetry group (home screen: Speed).
+static lv_obj_t * ui_chargingScreenDock = NULL;
 
 void ui_event_chargingScreen(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
 
+    // NEW - see this file's header comment: back-link to Status, replacing
+    // the removed cross-group Battery link, so this screen stays reachable
+    // by swipe from within its own Telemetry group.
     if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_RIGHT) {
         lv_indev_wait_release(lv_indev_get_act());
-        _ui_screen_change(&ui_batteryScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_batteryScreen_screen_init);
+        _ui_screen_change(&ui_statusScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_statusScreen_screen_init);
         _ui_screen_delete(&ui_chargingScreen);
     }
-    if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_LEFT) {
-        lv_indev_wait_release(lv_indev_get_act());
-        _ui_screen_change(&ui_gpsScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_gpsScreen_screen_init);
-        _ui_screen_delete(&ui_chargingScreen);
-    }
+    // Physical-LEFT swipe to GPS REMOVED here - see this file's header
+    // comment (styling/UX pass Phase 5).
 }
 
-// Same createPanel/createValueAndUnit/createBar pattern as
-// ui_driveScreen.c/ui_statusScreen.c - kept file-local/duplicated rather
-// than shared, matching this codebase's existing convention.
-static lv_obj_t *createPanel(lv_obj_t *parent, int16_t x, int16_t y, const char *title, lv_obj_t **outTitleLabel) {
-    lv_obj_t *panel = lv_obj_create(parent);
-    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(panel, GRID_PANEL_W, GRID_PANEL_H);
-    lv_obj_set_pos(panel, x, y);
-    lv_obj_set_style_pad_all(panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(panel, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(panel, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(panel, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_color(panel, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(panel, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    lv_obj_t *titleLabel = lv_label_create(panel);
-    lv_obj_set_pos(titleLabel, 12, 8);
-    lv_label_set_text(titleLabel, title);
-    lv_obj_set_style_text_color(titleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(titleLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    if (outTitleLabel) *outTitleLabel = titleLabel;
-    return panel;
-}
-
-static void createValueAndUnit(lv_obj_t *panel, lv_obj_t **outVal, lv_obj_t **outUnit, const char *unitText) {
-    lv_obj_t *val = lv_label_create(panel);
-    lv_obj_align(val, LV_ALIGN_CENTER, 0, -8);
-    lv_label_set_text(val, "0");
-    lv_obj_set_style_text_color(val, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(val, &font_montserrat_extrabold_32, LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (outVal) *outVal = val;
-
-    lv_obj_t *unit = lv_label_create(panel);
-    lv_obj_align(unit, LV_ALIGN_CENTER, 0, 28);
-    lv_label_set_text(unit, unitText);
-    lv_obj_set_style_text_color(unit, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(unit, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (outUnit) *outUnit = unit;
-}
-
+// Styling pass (2026-09-18): panel/value construction now goes through
+// ui_card_grid.h's shared ui_card_create*() - see that header for why (4
+// files hand-duplicated this identically). This screen's bars keep their
+// own local createBar() rather than ui_card_createBar() because every one
+// uses ui_theme_accent_energy() (the charging-specific accent color) on
+// the indicator, not ui_theme_accent() - a real, intentional per-screen
+// difference the shared helper doesn't parameterize (it wasn't asked to;
+// only Charging uses a second accent color). None of these bars have a
+// real warningSet threshold behind them either, so the shared header's
+// zoneDir gradient wouldn't apply here regardless - bar gradient/flat
+// audit, styling pass item 5.
 static lv_obj_t *createBar(lv_obj_t *panel, bool symmetrical, int32_t rangeMin, int32_t rangeMax) {
     lv_obj_t *bar = lv_bar_create(panel);
     if (symmetrical) lv_bar_set_mode(bar, LV_BAR_MODE_SYMMETRICAL);
@@ -181,7 +159,7 @@ void ui_chargingScreen_screen_init(void)
     // comment. Body 150x64, nub 10x26 attached to its right edge, fill
     // inset 6px on every side of the body's inner area (150-2*6=138 max
     // width, matches BATTERY_FILL_MAX_W).
-    ui_chargingSocPanel = createPanel(ui_chargingScreen, GRID_GAP, GRID_GAP, "SOC", NULL);
+    ui_chargingSocPanel = ui_card_createPanel(ui_chargingScreen, GRID_GAP, GRID_GAP, "SOC", NULL);
 
     ui_chargingBatteryBody = lv_obj_create(ui_chargingSocPanel);
     lv_obj_clear_flag(ui_chargingBatteryBody, LV_OBJ_FLAG_SCROLLABLE);
@@ -235,45 +213,22 @@ void ui_chargingScreen_screen_init(void)
     lv_obj_set_style_text_font(ui_chargingSocValLabel, &font_montserrat_extrabold_48, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // --- Charge Status: pill + secondary plug-detected label ---
-    ui_chargingStatusPanel = createPanel(ui_chargingScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP, "CHARGE STATUS", NULL);
+    ui_chargingStatusPanel = ui_card_createPanel(ui_chargingScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP, "CHARGE STATUS", NULL);
 
-    ui_chargingStatusPill = lv_obj_create(ui_chargingStatusPanel);
-    lv_obj_clear_flag(ui_chargingStatusPill, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(ui_chargingStatusPill, 320, 44);
-    lv_obj_align(ui_chargingStatusPill, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_radius(ui_chargingStatusPill, 22, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(ui_chargingStatusPill, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_chargingStatusPill, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(ui_chargingStatusPill, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    // Styling pass: migrated onto ui_status_pill.h's shared pill (was a
+    // hand-built lv_obj + its own copy-pasted 400ms fade transition).
+    ui_chargingStatusPill = ui_pill_create(ui_chargingStatusPanel, 320, 44, 22, &ui_chargingStatusLabel, &font_montserrat_semibold_24);
+    lv_obj_align(ui_chargingStatusPill, LV_ALIGN_CENTER, 0, -8);
+    ui_pill_setState(ui_chargingStatusPill, ui_chargingStatusLabel, UI_PILL_NEUTRAL, "NOT CHARGING");
 
-    // Smooth color fade instead of an instant snap when charge status
-    // changes (design-review "motion" pass, 2026-09-14) - a style
-    // transition, not a one-shot lv_anim like the battery fill above,
-    // since this needs to apply to every future lv_obj_set_style_bg_color
-    // call on this pill (in ui_chargingScreen_setStatus()), not just one
-    // tween. static storage: LVGL keeps a pointer to both structs, not a
-    // copy, so they must outlive this function - fine here since screens
-    // in this codebase are never actually destroyed (see _ui_screen_delete's
-    // known-inverted-condition note in ui_helpers.h).
-    static const lv_style_prop_t pillTransProps[] = { LV_STYLE_BG_COLOR, 0 };
-    static lv_style_transition_dsc_t pillTransDsc;
-    static lv_style_t pillTransStyle;
-    lv_style_transition_dsc_init(&pillTransDsc, pillTransProps, lv_anim_path_ease_out, 400, 0, NULL);
-    lv_style_init(&pillTransStyle);
-    lv_style_set_transition(&pillTransStyle, &pillTransDsc);
-    lv_obj_add_style(ui_chargingStatusPill, &pillTransStyle, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    ui_chargingStatusLabel = lv_label_create(ui_chargingStatusPill);
-    lv_obj_center(ui_chargingStatusLabel);
-    lv_label_set_text(ui_chargingStatusLabel, "NOT CHARGING");
-    lv_obj_set_style_text_color(ui_chargingStatusLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_chargingStatusLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
-
+    // Offset +28, not +40 - GRID_PANEL_H shrank from 149 to 124 (see
+    // ui_card_grid.h's comment), so this and the pill above both moved up
+    // to keep this label from running past the panel's shorter bottom edge.
     ui_chargingPlugLabel = lv_label_create(ui_chargingStatusPanel);
-    lv_obj_align(ui_chargingPlugLabel, LV_ALIGN_CENTER, 0, 40);
+    lv_obj_align(ui_chargingPlugLabel, LV_ALIGN_CENTER, 0, 28);
     lv_label_set_text(ui_chargingPlugLabel, "Plug: --");
     lv_obj_set_style_text_color(ui_chargingPlugLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_chargingPlugLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_chargingPlugLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // --- Charge Setpoint: Voltspnt, V ---
     // TODO: 0-450V range is a placeholder, matching the other pack-voltage
@@ -281,13 +236,13 @@ void ui_chargingScreen_screen_init(void)
     // "SETPOINT" not "CHARGE SETPOINT" - label-shortening pass, 2026-09-14
     // (see waveshare-dash-build.md) - the screen title already says
     // "charging", repeating it in every panel title is redundant.
-    ui_chargingSetpointPanel = createPanel(ui_chargingScreen, GRID_GAP, GRID_GAP * 2 + GRID_PANEL_H, "SETPOINT", NULL);
-    createValueAndUnit(ui_chargingSetpointPanel, &ui_chargingSetpointValLabel, NULL, "V");
+    ui_chargingSetpointPanel = ui_card_createPanel(ui_chargingScreen, GRID_GAP, GRID_GAP * 2 + GRID_PANEL_H, "SETPOINT", NULL);
+    ui_card_createValueAndUnit(ui_chargingSetpointPanel, &ui_chargingSetpointValLabel, NULL, "V");
     ui_chargingSetpointBar = createBar(ui_chargingSetpointPanel, false, 0, 450);
 
     // --- Charger Temp: ChgTemp, degC (signed) ---
-    ui_chargingTempPanel = createPanel(ui_chargingScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 2 + GRID_PANEL_H, ICON_THERMOSTAT " CHARGER TEMP", NULL);
-    createValueAndUnit(ui_chargingTempPanel, &ui_chargingTempValLabel, NULL, "\xC2\xB0" "C");
+    ui_chargingTempPanel = ui_card_createPanel(ui_chargingScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 2 + GRID_PANEL_H, ICON_THERMOSTAT " CHARGER TEMP", NULL);
+    ui_card_createValueAndUnit(ui_chargingTempPanel, &ui_chargingTempValLabel, NULL, "\xC2\xB0" "C");
     ui_chargingTempBar = createBar(ui_chargingTempPanel, true, -20, 100);
 
     // --- AC Supply Voltage: AC_Volts, V ---
@@ -295,8 +250,8 @@ void ui_chargingScreen_screen_init(void)
     // vehicle ever sees 3-phase supply.
     // "AC VOLTS" not "AC SUPPLY VOLTS" - label-shortening pass, 2026-09-14
     // (see waveshare-dash-build.md).
-    ui_chargingAcVPanel = createPanel(ui_chargingScreen, GRID_GAP, GRID_GAP * 3 + GRID_PANEL_H * 2, ICON_BOLT " AC VOLTS", NULL);
-    createValueAndUnit(ui_chargingAcVPanel, &ui_chargingAcVValLabel, NULL, "V");
+    ui_chargingAcVPanel = ui_card_createPanel(ui_chargingScreen, GRID_GAP, GRID_GAP * 3 + GRID_PANEL_H * 2, ICON_BOLT " AC VOLTS", NULL);
+    ui_card_createValueAndUnit(ui_chargingAcVPanel, &ui_chargingAcVValLabel, NULL, "V");
     ui_chargingAcVBar = createBar(ui_chargingAcVPanel, false, 0, 260);
 
     // --- Cable/EVSE Limit: PilotLim (primary) + CableLim (secondary) ---
@@ -304,17 +259,20 @@ void ui_chargingScreen_screen_init(void)
     //
     // This is the one cell in this codebase with FOUR stacked elements
     // (value/unit/bar/secondary-label) instead of createValueAndUnit()'s +
-    // createBar()'s usual three (-8/+28/+58 offsets) - those three already
-    // use nearly the panel's full 149px height, so a 4th line built by hand
-    // here instead of via the shared helpers, with tighter offsets, rather
-    // than reusing spacing that was never budgeted for a 4th line. Found on
-    // hardware (2026-09-14): the original version called the shared
-    // helpers unchanged and just bolted the Cable label onto the bottom
-    // corner, which put it directly on top of the bar.
-    ui_chargingLimPanel = createPanel(ui_chargingScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 3 + GRID_PANEL_H * 2, "EVSE LIMIT", NULL);
+    // createBar()'s usual three - those three already use nearly the
+    // panel's full height, so a 4th line built by hand here instead of via
+    // the shared helpers, with tighter offsets, rather than reusing
+    // spacing that was never budgeted for a 4th line. Found on hardware
+    // (2026-09-14): the original version called the shared helpers
+    // unchanged and just bolted the Cable label onto the bottom corner,
+    // which put it directly on top of the bar. Offsets rescaled again
+    // (2026-09-18) for the shorter 124px panel (was 149px, see
+    // ui_card_grid.h's GRID_PANEL_H comment) - the original -26/+2/+24/+48
+    // set pushed the Cable label past the new panel's bottom edge.
+    ui_chargingLimPanel = ui_card_createPanel(ui_chargingScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 3 + GRID_PANEL_H * 2, "EVSE LIMIT", NULL);
 
     ui_chargingLimValLabel = lv_label_create(ui_chargingLimPanel);
-    lv_obj_align(ui_chargingLimValLabel, LV_ALIGN_CENTER, 0, -26);
+    lv_obj_align(ui_chargingLimValLabel, LV_ALIGN_CENTER, 0, -22);
     lv_label_set_text(ui_chargingLimValLabel, "0");
     lv_obj_set_style_text_color(ui_chargingLimValLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_chargingLimValLabel, &font_montserrat_extrabold_32, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -323,13 +281,13 @@ void ui_chargingScreen_screen_init(void)
     lv_obj_align(limUnit, LV_ALIGN_CENTER, 0, 2);
     lv_label_set_text(limUnit, "A");
     lv_obj_set_style_text_color(limUnit, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(limUnit, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(limUnit, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_chargingLimBar = lv_bar_create(ui_chargingLimPanel);
     lv_bar_set_range(ui_chargingLimBar, 0, 80);
     lv_bar_set_value(ui_chargingLimBar, 0, LV_ANIM_OFF);
     lv_obj_set_size(ui_chargingLimBar, 320, 14);
-    lv_obj_align(ui_chargingLimBar, LV_ALIGN_CENTER, 0, 24);
+    lv_obj_align(ui_chargingLimBar, LV_ALIGN_CENTER, 0, 20);
     lv_obj_set_style_radius(ui_chargingLimBar, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(ui_chargingLimBar, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_chargingLimBar, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -340,10 +298,12 @@ void ui_chargingScreen_screen_init(void)
     lv_obj_set_style_bg_opa(ui_chargingLimBar, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
 
     ui_chargingCableLimLabel = lv_label_create(ui_chargingLimPanel);
-    lv_obj_align(ui_chargingCableLimLabel, LV_ALIGN_CENTER, 0, 48);
+    lv_obj_align(ui_chargingCableLimLabel, LV_ALIGN_CENTER, 0, 38);
     lv_label_set_text(ui_chargingCableLimLabel, "Cable: --");
     lv_obj_set_style_text_color(ui_chargingCableLimLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_chargingCableLimLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_chargingCableLimLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    ui_chargingScreenDock = ui_dock_create(ui_chargingScreen, UI_DOCK_TELEMETRY);
 
     lv_obj_add_event_cb(ui_chargingScreen, ui_event_chargingScreen, LV_EVENT_ALL, NULL);
 }
@@ -387,19 +347,21 @@ void ui_chargingScreen_setStatus(int opmode, int chgType, int plugDet)
 
     // opmode: 0=Off,1=Run,2=Precharge,3=PchFail,4=Charge (PARAM_ID_OPMODE)
     bool charging = (opmode == 4);
-    lv_color_t color;
     if (charging) {
         // chgType: 0=Off,1=AC,2=DCFC (PARAM_ID_CHGTYP). LV_SYMBOL_CHARGE
         // prefix - design-review "icons" pass, 2026-09-14 (see
         // waveshare-dash-build.md) - only shown while actually charging,
-        // not as a static decoration.
+        // not as a static decoration. Text set directly (lv_label_set_text_fmt,
+        // not ui_pill_setState's text param) since that only takes a plain
+        // string, not a format string; ui_pill_setState below is then only
+        // asked to apply the color (text=NULL is a no-op there).
         lv_label_set_text_fmt(ui_chargingStatusLabel, LV_SYMBOL_CHARGE " CHARGING - %s", (chgType == 2) ? "DCFC" : "AC");
-        color = ui_theme_good();
+        ui_chargingStatusPillState = UI_PILL_ACTIVE;
+        ui_pill_setState(ui_chargingStatusPill, ui_chargingStatusLabel, ui_chargingStatusPillState, NULL);
     } else {
-        lv_label_set_text(ui_chargingStatusLabel, "NOT CHARGING");
-        color = ui_theme_panel_border();
+        ui_chargingStatusPillState = UI_PILL_NEUTRAL;
+        ui_pill_setState(ui_chargingStatusPill, ui_chargingStatusLabel, ui_chargingStatusPillState, "NOT CHARGING");
     }
-    lv_obj_set_style_bg_color(ui_chargingStatusPill, color, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     if (ui_chargingPlugLabel) {
         // plugDet: 0=Off,1=On,2=na (PARAM_ID_PLUGDET)
@@ -429,6 +391,7 @@ void ui_chargingScreen_refresh_theme(void)
     if (ui_chargingBatteryNub) lv_obj_set_style_bg_color(ui_chargingBatteryNub, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
     // ui_chargingBatteryFill's color is data-driven (warn vs accent) - left
     // alone here, same reasoning as the value labels below.
+    ui_pill_refreshTheme(ui_chargingStatusPill, ui_chargingStatusPillState);
     if (ui_chargingPlugLabel) lv_obj_set_style_text_color(ui_chargingPlugLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_chargingCableLimLabel) lv_obj_set_style_text_color(ui_chargingCableLimLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -439,6 +402,7 @@ void ui_chargingScreen_refresh_theme(void)
         lv_obj_set_style_border_color(bars[i], ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(bars[i], ui_theme_accent_energy(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
     }
+    ui_dock_refresh_theme(ui_chargingScreenDock, UI_DOCK_TELEMETRY);
     // Value labels and the status pill's color are data-driven and left
     // alone here - they self-correct on their next natural data update,
     // same reasoning as every other screen in this codebase.
@@ -471,4 +435,6 @@ void ui_chargingScreen_screen_destroy(void)
     ui_chargingLimValLabel = NULL;
     ui_chargingLimBar = NULL;
     ui_chargingCableLimLabel = NULL;
+    ui_chargingStatusPillState = UI_PILL_NEUTRAL;
+    ui_chargingScreenDock = NULL;
 }

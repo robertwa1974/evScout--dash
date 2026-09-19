@@ -77,6 +77,16 @@ lv_color_t ui_theme_accent_energy(void);
 lv_color_t ui_theme_warning(void);
 lv_color_t ui_theme_good(void);
 lv_color_t ui_theme_bad(void);
+// "No data yet" - a value is 0/unset because the VCU/BMS hasn't sent a
+// real frame since boot, NOT a genuine reading. Deliberately distinct from
+// both ui_theme_text_secondary() (used for units/captions - readable,
+// present data) and ui_theme_panel_border() (a status pill's neutral/idle
+// bg - the VCU IS connected, just not doing anything) - "no data at all"
+// is a different concept from either. Added 2026-09-18 for the styling
+// pass's no-data-vs-fault distinction (see ui_can_freshness.h) - use for
+// both text color and bar-fill color in that state, same "one color, two
+// contexts" pattern as ui_theme_warning()/good()/bad() already follow.
+lv_color_t ui_theme_dim(void);
 
 #ifdef __cplusplus
 }

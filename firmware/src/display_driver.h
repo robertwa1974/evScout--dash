@@ -298,6 +298,16 @@ void ch422g_assert_sd_cs(void);
 #endif
 
 void setBrightness(int val);
+// Animated backlight fade (styling pass, 2026-09-18, item 11) - genuinely
+// new, no existing fade primitive before this (setBrightness() above is an
+// instant ledcWrite()). Used by the splash screen's boot-in ramp (Phase 4)
+// and the low-12V shutdown fade-to-black (Phase 6). targetDuty is the raw
+// 0-255 PWM duty (NOT clamped to setBrightness()'s 55 floor - shutdown
+// needs to reach a real 0, fully off), ms is the ramp duration. Implemented
+// via lv_anim_t stepping brightnessVal/ledcWrite over the window, same
+// "own lv_anim_t targeting a plain value" pattern as
+// ui_chargingScreen.c's battery-fill tween.
+void backlight_rampTo(int targetDuty, uint32_t ms);
 void disp_flush_callback(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *px_map);
 void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data);
 

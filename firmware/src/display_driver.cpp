@@ -180,3 +180,34 @@ void setBrightness(int val) {
   ledcWrite(LCD_PIN_BACKLIGHT, brightnessVal);
 // #endif
 }
+
+// See display_driver.h for the rationale (styling pass item 11). Dummy
+// static var, not a real object - this animates a raw PWM duty value, not
+// any widget's style property, so there's nothing else for lv_anim_t's
+// var/exec_cb pairing to key off; a fixed address just gives lv_anim_del()
+// something stable to identify "the backlight ramp" by if one is ever
+// re-triggered mid-fade (e.g. splash's exit gate firing while a boot-in
+// ramp is still running - the new lv_anim_start() call below cancels any
+// existing animation on this same var+exec_cb pair first, LVGL's own
+// built-in behavior, see lv_anim_start()'s doc comment).
+static uint8_t backlightRampAnimVar;
+
+static void backlightRampAnimExec(void *var, int32_t v) {
+  (void)var;
+  brightnessVal = v;
+  ledcWrite(LCD_PIN_BACKLIGHT, v);
+}
+
+void backlight_rampTo(int targetDuty, uint32_t ms) {
+  if (targetDuty < 0) targetDuty = 0;
+  if (targetDuty > 255) targetDuty = 255;
+
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, &backlightRampAnimVar);
+  lv_anim_set_exec_cb(&a, backlightRampAnimExec);
+  lv_anim_set_values(&a, brightnessVal, targetDuty);
+  lv_anim_set_time(&a, ms);
+  lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+  lv_anim_start(&a);
+}

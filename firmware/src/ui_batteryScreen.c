@@ -2,16 +2,22 @@
 // ui_batteryScreen.c - cell-level BMS detail (renamed from ui_bmsScreen.c)
 // ============================================================================
 // Layout (800x480), hand-written, no SquareLine project (same situation as
-// every other hand-written screen in this repo):
-//   Large SOC ring, centered top:     200x200 arc, x=300 y=10
-//   Status pill (charge/discharge/idle), centered: 240x44, x=280 y=220
-//   4 stacked labeled bar rows, y=284..480 (40px row + 12px gap):
-//     Max Cell Voltage, Min Cell Voltage, Cell Delta V (computed), Max Cell
-//     Temp - see waveshare-dash-build.md for the 2026-09-14 decision to
-//     drop the old pack-aggregate voltage/current rows (moved to
-//     ui_statusScreen.c/ui_driveScreen.c) in favor of genuinely cell-level
-//     data now that BMS_Vmax/BMS_Vmin/BMS_Tmax are polled (PARAM_ID_BMS_*
-//     in zombie_updaters.h).
+// every other hand-written screen in this repo).
+//
+// Styling pass rebuild (2026-09-18, item 8): replaced the previous bespoke
+// arc+pill+4-stacked-bar-row layout with the same ui_card_grid.h 2x3 grid
+// pattern used on Drive/Status/GPS/Charging, for layout CONSISTENCY across
+// the app (styling pass item 6) - this was the one screen still using a
+// bespoke full-width layout instead of the shared card grid.
+//   (0,0) 8,8     SOC             - %, ring/arc gauge, same treatment as
+//                                    Status screen's SOC cell
+//   (1,0) 404,8   Status          - pill: CHARGING/DISCHARGING/IDLE, from
+//                                    sign of packCurrent
+//   (0,1) 8,165   Max Cell V      - V, BMS_Vmax
+//   (1,1) 404,165 Min Cell V      - V, BMS_Vmin
+//   (0,2) 8,322   Cell Delta V    - V, computed (Vmax-Vmin), not a
+//                                    separate SDO param
+//   (1,2) 404,322 Max Cell Temp   - degC, BMS_Tmax
 //
 // Per-cell voltage bars for EVERY individual cell (JKBMS's actual headline
 // feature) are still not built - the VCU only relays pack-level min/max/
@@ -19,105 +25,79 @@
 // cell-level BMS data source with a full per-cell array gets added later,
 // see the placeholder comment below for where that would go.
 //
+// None of this screen's bars (cell V max/min/delta, cell temp max) have a
+// real warningSet threshold behind them (zombie_updaters.h's warning_set
+// only defines lowSoc/motorTemp/heatsinkTemp/packVLow) - all pass
+// zoneDir=0 (flat track), same bar gradient/flat audit as every other
+// screen (styling pass item 5).
+//
 // Bound to myData in zombie_updaters.cpp, same dirty-check + dataMutex-then-
 // uiMutex pattern as every other screen.
 //
-// Navigation, following the approved topology (Settings <-> Speed(home) <->
-// Drive <-> Status <-> Battery <-> Charging <-> Dyno LIVE -> Dyno RESULTS -
-// Charging inserted 2026-09-14 between Battery and Dyno LIVE): physical
-// swipe LEFT -> Status (back), physical swipe RIGHT -> Charging (forward,
-// was Dyno LIVE before Charging was inserted). This board reports gesture
-// direction inverted from the physical swipe
-// (see CLAUDE.md's "Touch gesture direction") - the code checks
-// LV_DIR_RIGHT for the physical-LEFT swipe and LV_DIR_LEFT for the
-// physical-RIGHT swipe. Intentional; don't "fix" it without re-verifying on
-// hardware first.
+// Navigation: BOTH swipe directions REMOVED (styling/UX pass Phase 5,
+// 2026-09-18) - Battery/BMS is its own dock group with no sibling screens
+// (unlike Telemetry's Speed/Drive/Status/Charging), so every link off this
+// screen was cross-group and is now dock-only (see ui_dock.h's mapping
+// comment and the plan's swipe-removal table). This is the one screen in
+// the whole app with no swipe navigation left at all - reachable only via
+// the dock's BMS icon.
 // ============================================================================
 
 #include "ui.h"
 
 lv_obj_t * ui_batteryScreen = NULL;
 
+lv_obj_t * ui_batterySocPanel = NULL;
+lv_obj_t * ui_batterySocTitleLabel = NULL;
 lv_obj_t * ui_batterySocArc = NULL;
 lv_obj_t * ui_batterySocValLabel = NULL;
 lv_obj_t * ui_batterySocIconLabel = NULL;
 
+lv_obj_t * ui_batteryStatusPanel = NULL;
 lv_obj_t * ui_batteryStatusPill = NULL;
 lv_obj_t * ui_batteryStatusLabel = NULL;
+// Tracks the pill's current semantic state for refresh_theme() - see
+// ui_gpsScreen.c's identical pattern/comment for why.
+static ui_pill_state_t ui_batteryStatusPillState = UI_PILL_NEUTRAL;
 
 lv_obj_t * ui_batteryVMaxLabel = NULL;
 lv_obj_t * ui_batteryVMaxBar = NULL;
 lv_obj_t * ui_batteryVMaxValLabel = NULL;
+lv_obj_t * ui_batteryVMaxUnitLabel = NULL;
 
 lv_obj_t * ui_batteryVMinLabel = NULL;
 lv_obj_t * ui_batteryVMinBar = NULL;
 lv_obj_t * ui_batteryVMinValLabel = NULL;
+lv_obj_t * ui_batteryVMinUnitLabel = NULL;
 
 lv_obj_t * ui_batteryDeltaVLabel = NULL;
 lv_obj_t * ui_batteryDeltaVBar = NULL;
 lv_obj_t * ui_batteryDeltaVValLabel = NULL;
+lv_obj_t * ui_batteryDeltaVUnitLabel = NULL;
 
 lv_obj_t * ui_batteryTMaxLabel = NULL;
 lv_obj_t * ui_batteryTMaxBar = NULL;
 lv_obj_t * ui_batteryTMaxValLabel = NULL;
+lv_obj_t * ui_batteryTMaxUnitLabel = NULL;
+
+// Persistent bottom nav dock (styling/UX pass Phase 5, 2026-09-18) - see
+// ui_dock.h. Battery is its own BMS dock group (no sibling screens).
+static lv_obj_t * ui_batteryScreenDock = NULL;
 
 // TODO (full per-cell BMS data source, if one gets added): a scrollable
 // list of N per-cell voltage bars would go here, one row each, JKBMS-style
-// - mirroring createBarRow() below but built dynamically for however many
-// cells the pack reports instead of the 4 fixed rows.
+// - a dynamically-built list of ui_card_createBar()-style rows instead of
+// the 4 fixed cards above, sized to however many cells the pack reports.
 
+// Empty on purpose (styling/UX pass Phase 5, 2026-09-18) - see this file's
+// header comment: both swipe directions this screen used to have were
+// cross-group and are now dock-only. Kept registered (not removed) so this
+// screen still matches every other screen's "has its own ui_event_*
+// handler" shape, in case a future non-navigation gesture (e.g. brightness)
+// ever needs one here.
 void ui_event_batteryScreen(lv_event_t * e)
 {
-    lv_event_code_t event_code = lv_event_get_code(e);
-
-    if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_RIGHT) {
-        lv_indev_wait_release(lv_indev_get_act());
-        _ui_screen_change(&ui_statusScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_statusScreen_screen_init);
-        _ui_screen_delete(&ui_batteryScreen);
-    }
-    if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_LEFT) {
-        lv_indev_wait_release(lv_indev_get_act());
-        _ui_screen_change(&ui_chargingScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_chargingScreen_screen_init);
-        _ui_screen_delete(&ui_batteryScreen);
-    }
-}
-
-static void createBarRow(lv_obj_t *parent, int16_t y, const char *title, bool symmetrical,
-                          int32_t rangeMin, int32_t rangeMax,
-                          lv_obj_t **outTitle, lv_obj_t **outBar, lv_obj_t **outVal) {
-    lv_obj_t *title_label = lv_label_create(parent);
-    lv_obj_set_pos(title_label, 40, y + 10);
-    lv_label_set_text(title_label, title);
-    lv_obj_set_style_text_color(title_label, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(title_label, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (outTitle) *outTitle = title_label;
-
-    lv_obj_t *bar = lv_bar_create(parent);
-    if (symmetrical) {
-        lv_bar_set_mode(bar, LV_BAR_MODE_SYMMETRICAL);
-    }
-    lv_bar_set_range(bar, rangeMin, rangeMax);
-    lv_bar_set_value(bar, symmetrical ? 0 : rangeMin, LV_ANIM_OFF);
-    lv_obj_set_size(bar, 410, 20);
-    lv_obj_set_pos(bar, 200, y + 10);
-    lv_obj_set_style_radius(bar, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(bar, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(bar, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_color(bar, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(bar, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(bar, 4, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(bar, ui_theme_accent_energy(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(bar, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    if (outBar) *outBar = bar;
-
-    lv_obj_t *val = lv_label_create(parent);
-    lv_obj_set_pos(val, 620, y + 8);
-    lv_obj_set_width(val, 160);
-    lv_obj_set_style_text_align(val, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_label_set_text(val, "0");
-    lv_obj_set_style_text_color(val, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(val, &font_montserrat_extrabold_32, LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (outVal) *outVal = val;
+    (void)e;
 }
 
 void ui_batteryScreen_screen_init(void)
@@ -127,90 +107,76 @@ void ui_batteryScreen_screen_init(void)
     lv_obj_set_style_bg_color(ui_batteryScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_batteryScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // --- SOC ring, centered top ---
-    ui_batterySocArc = lv_arc_create(ui_batteryScreen);
-    lv_obj_set_size(ui_batterySocArc, 200, 200);
-    lv_obj_set_pos(ui_batterySocArc, 300, 10);
+    // --- SOC: ring/arc gauge, same treatment as ui_statusScreen.c's SOC
+    // cell (96px arc, 10px stroke -> ~76px inner diameter, 24px digits) -
+    // shrunk from 120x120 for the shorter 124px panel, see ui_card_grid.h's
+    // GRID_PANEL_H comment. Offset -6 (not 0, unlike Status's SOC cell)
+    // leaves room below the arc for this screen's own battery-level icon
+    // glyph, which Status's plainer SOC cell doesn't have. ---
+    ui_batterySocPanel = ui_card_createPanel(ui_batteryScreen, GRID_GAP, GRID_GAP, "SOC", &ui_batterySocTitleLabel);
+
+    ui_batterySocArc = lv_arc_create(ui_batterySocPanel);
+    lv_obj_set_size(ui_batterySocArc, 96, 96);
+    lv_obj_align(ui_batterySocArc, LV_ALIGN_CENTER, 0, -6);
     lv_arc_set_bg_angles(ui_batterySocArc, 135, 45);
     lv_arc_set_range(ui_batterySocArc, 0, 100);
     lv_arc_set_value(ui_batterySocArc, 0);
     lv_obj_remove_style(ui_batterySocArc, NULL, LV_PART_KNOB);
     lv_obj_clear_flag(ui_batterySocArc, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_opa(ui_batterySocArc, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_width(ui_batterySocArc, 18, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_width(ui_batterySocArc, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_color(ui_batterySocArc, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_width(ui_batterySocArc, 18, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_width(ui_batterySocArc, 10, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_color(ui_batterySocArc, ui_theme_accent_energy(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
 
-    ui_batterySocValLabel = lv_label_create(ui_batteryScreen);
-    // Centered on the arc's actual vertical middle (arc: y=10, 200 tall ->
-    // center y=110). Digits only, no "%" - same arc-containment reasoning
-    // as every other SOC label in this codebase (200px arc, 18px stroke ->
-    // ~164px inner diameter).
-    lv_obj_align(ui_batterySocValLabel, LV_ALIGN_TOP_MID, 0, 110 - 24);
+    ui_batterySocValLabel = lv_label_create(ui_batterySocPanel);
+    // Digits only, no "%" - same arc-containment reasoning as every other
+    // SOC label in this codebase.
+    lv_obj_align(ui_batterySocValLabel, LV_ALIGN_CENTER, 0, -6);
     lv_label_set_text(ui_batterySocValLabel, "0");
     lv_obj_set_style_text_color(ui_batterySocValLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_batterySocValLabel, &font_montserrat_extrabold_48, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_batterySocValLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // Battery-level icon below the percentage (design-review "icons" pass,
-    // 2026-09-14) - LVGL's built-in symbol glyphs (baked into the bundled
-    // Montserrat fonts, no new asset/font-conversion pipeline needed).
-    // y=160 sits well inside the arc's inner circle (arc spans screen
-    // y=10..210; the value label above ends around y=144), so this is a
-    // second, lighter-weight glanceable cue, not a replacement for it.
-    ui_batterySocIconLabel = lv_label_create(ui_batteryScreen);
-    lv_obj_align(ui_batterySocIconLabel, LV_ALIGN_TOP_MID, 0, 160);
+    ui_batterySocIconLabel = lv_label_create(ui_batterySocPanel);
+    lv_obj_align(ui_batterySocIconLabel, LV_ALIGN_CENTER, 0, 18);
     lv_label_set_text(ui_batterySocIconLabel, LV_SYMBOL_BATTERY_EMPTY);
     lv_obj_set_style_text_color(ui_batterySocIconLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_batterySocIconLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_batterySocIconLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // --- Status pill ---
-    ui_batteryStatusPill = lv_obj_create(ui_batteryScreen);
-    lv_obj_clear_flag(ui_batteryStatusPill, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(ui_batteryStatusPill, 240, 44);
-    lv_obj_set_pos(ui_batteryStatusPill, 280, 220);
-    lv_obj_set_style_radius(ui_batteryStatusPill, 22, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(ui_batteryStatusPill, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_batteryStatusPill, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(ui_batteryStatusPill, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_batteryStatusPanel = ui_card_createPanel(ui_batteryScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP, "STATUS", NULL);
 
-    // Smooth color fade instead of an instant snap when charge status
-    // changes (design-review "motion" pass, rolled out from the Charging
-    // screen prototype - see waveshare-dash-build.md, 2026-09-14). Static
-    // storage: LVGL keeps a pointer to both structs, not a copy - fine
-    // since screens in this codebase are never actually destroyed (see
-    // _ui_screen_delete's known-inverted-condition note in ui_helpers.h).
-    static const lv_style_prop_t pillTransProps[] = { LV_STYLE_BG_COLOR, 0 };
-    static lv_style_transition_dsc_t pillTransDsc;
-    static lv_style_t pillTransStyle;
-    lv_style_transition_dsc_init(&pillTransDsc, pillTransProps, lv_anim_path_ease_out, 400, 0, NULL);
-    lv_style_init(&pillTransStyle);
-    lv_style_set_transition(&pillTransStyle, &pillTransDsc);
-    lv_obj_add_style(ui_batteryStatusPill, &pillTransStyle, LV_PART_MAIN | LV_STATE_DEFAULT);
+    // Styling pass: migrated onto ui_status_pill.h's shared pill (was a
+    // hand-built lv_obj + its own copy-pasted 400ms fade transition).
+    ui_batteryStatusPill = ui_pill_create(ui_batteryStatusPanel, 240, 44, 22, &ui_batteryStatusLabel, &font_montserrat_semibold_24);
+    lv_obj_align(ui_batteryStatusPill, LV_ALIGN_CENTER, 0, 0);
+    ui_pill_setState(ui_batteryStatusPill, ui_batteryStatusLabel, UI_PILL_NEUTRAL, "IDLE");
 
-    ui_batteryStatusLabel = lv_label_create(ui_batteryStatusPill);
-    lv_obj_center(ui_batteryStatusLabel);
-    lv_label_set_text(ui_batteryStatusLabel, "IDLE");
-    lv_obj_set_style_text_color(ui_batteryStatusLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_batteryStatusLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    // --- 4 cell-level bar rows ---
+    // --- 4 cell-level cards ---
     // TODO: cell voltage range (2.5-4.3V) and cell temp range are Li-ion
     // placeholder defaults - tune to your actual cell chemistry once known.
     // "MAX/MIN CELL V" not "...VOLTAGE" - found on hardware 2026-09-14
-    // after the ExtraBold font pass: the full word measured 175px/168px in
-    // the new bold 16px font against this row's ~160px title-before-bar
-    // budget (title at x=40, bar starts at x=200), clashing with the bar.
-    // Shortened to match "CELL DELTA V" below, which already used this
-    // abbreviation - not a new convention, just applied consistently.
-    createBarRow(ui_batteryScreen, 284, "MAX CELL V", false, 250, 430,
-                 &ui_batteryVMaxLabel, &ui_batteryVMaxBar, &ui_batteryVMaxValLabel);
-    createBarRow(ui_batteryScreen, 336, "MIN CELL V", false, 250, 430,
-                 &ui_batteryVMinLabel, &ui_batteryVMinBar, &ui_batteryVMinValLabel);
-    createBarRow(ui_batteryScreen, 388, "CELL DELTA V", false, 0, 50,
-                 &ui_batteryDeltaVLabel, &ui_batteryDeltaVBar, &ui_batteryDeltaVValLabel);
-    createBarRow(ui_batteryScreen, 440, "MAX CELL TEMP", true, -20, 80,
-                 &ui_batteryTMaxLabel, &ui_batteryTMaxBar, &ui_batteryTMaxValLabel);
+    // after the ExtraBold font pass (kept from the pre-rebuild version,
+    // still applies with the card grid's own title width budget).
+    lv_obj_t *vMaxPanel = ui_card_createPanel(ui_batteryScreen, GRID_GAP, GRID_GAP * 2 + GRID_PANEL_H, "MAX CELL V", &ui_batteryVMaxLabel);
+    ui_card_createValueAndUnit(vMaxPanel, &ui_batteryVMaxValLabel, &ui_batteryVMaxUnitLabel, "V");
+    // Cell voltage bars carry centivolts (value*100) for a bit of
+    // resolution out of an integer lv_bar range - see zombie_updaters.cpp.
+    ui_batteryVMaxBar = ui_card_createBar(vMaxPanel, false, 250, 430, 0);
+
+    lv_obj_t *vMinPanel = ui_card_createPanel(ui_batteryScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 2 + GRID_PANEL_H, "MIN CELL V", &ui_batteryVMinLabel);
+    ui_card_createValueAndUnit(vMinPanel, &ui_batteryVMinValLabel, &ui_batteryVMinUnitLabel, "V");
+    ui_batteryVMinBar = ui_card_createBar(vMinPanel, false, 250, 430, 0);
+
+    lv_obj_t *deltaVPanel = ui_card_createPanel(ui_batteryScreen, GRID_GAP, GRID_GAP * 3 + GRID_PANEL_H * 2, "CELL DELTA V", &ui_batteryDeltaVLabel);
+    ui_card_createValueAndUnit(deltaVPanel, &ui_batteryDeltaVValLabel, &ui_batteryDeltaVUnitLabel, "V");
+    ui_batteryDeltaVBar = ui_card_createBar(deltaVPanel, false, 0, 50, 0);
+
+    lv_obj_t *tMaxPanel = ui_card_createPanel(ui_batteryScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 3 + GRID_PANEL_H * 2, "MAX CELL TEMP", &ui_batteryTMaxLabel);
+    ui_card_createValueAndUnit(tMaxPanel, &ui_batteryTMaxValLabel, &ui_batteryTMaxUnitLabel, "\xC2\xB0" "C");
+    ui_batteryTMaxBar = ui_card_createBar(tMaxPanel, true, -20, 80, 0);
+
+    ui_batteryScreenDock = ui_dock_create(ui_batteryScreen, UI_DOCK_BMS);
 
     lv_obj_add_event_cb(ui_batteryScreen, ui_event_batteryScreen, LV_EVENT_ALL, NULL);
 }
@@ -220,19 +186,17 @@ void ui_batteryScreen_setStatus(float packCurrent) {
 
     const float deadband = 0.5f;  // avoid flicker right around 0A
     const char *text;
-    lv_color_t color;
     if (packCurrent < -deadband) {
         text = "CHARGING";
-        color = ui_theme_good();
+        ui_batteryStatusPillState = UI_PILL_ACTIVE;
     } else if (packCurrent > deadband) {
         text = "DISCHARGING";
-        color = ui_theme_bad();
+        ui_batteryStatusPillState = UI_PILL_CAUTION;
     } else {
         text = "IDLE";
-        color = ui_theme_panel_border();
+        ui_batteryStatusPillState = UI_PILL_NEUTRAL;
     }
-    lv_label_set_text(ui_batteryStatusLabel, text);
-    lv_obj_set_style_bg_color(ui_batteryStatusPill, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_pill_setState(ui_batteryStatusPill, ui_batteryStatusLabel, ui_batteryStatusPillState, text);
 }
 
 void ui_batteryScreen_refresh_theme(void)
@@ -240,25 +204,46 @@ void ui_batteryScreen_refresh_theme(void)
     if (ui_batteryScreen == NULL) return;
 
     lv_obj_set_style_bg_color(ui_batteryScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_color(ui_batterySocValLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_obj_t *panels[] = { ui_batterySocPanel, ui_batteryStatusPanel };
+    lv_obj_t *titles[] = { ui_batterySocTitleLabel, NULL };
+    for (int i = 0; i < 2; i++) {
+        if (panels[i]) {
+            lv_obj_set_style_bg_color(panels[i], ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_color(panels[i], ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        }
+        if (titles[i]) lv_obj_set_style_text_color(titles[i], ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
     if (ui_batterySocIconLabel) lv_obj_set_style_text_color(ui_batterySocIconLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_color(ui_batterySocArc, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_color(ui_batterySocArc, ui_theme_accent_energy(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    ui_pill_refreshTheme(ui_batteryStatusPill, ui_batteryStatusPillState);
 
-    lv_obj_t *titles[] = { ui_batteryVMaxLabel, ui_batteryVMinLabel, ui_batteryDeltaVLabel, ui_batteryTMaxLabel };
-    lv_obj_t *bars[]   = { ui_batteryVMaxBar, ui_batteryVMinBar, ui_batteryDeltaVBar, ui_batteryTMaxBar };
-    lv_obj_t *vals[]   = { ui_batteryVMaxValLabel, ui_batteryVMinValLabel, ui_batteryDeltaVValLabel, ui_batteryTMaxValLabel };
+    lv_obj_t *cardPanels[] = { lv_obj_get_parent(ui_batteryVMaxBar), lv_obj_get_parent(ui_batteryVMinBar), lv_obj_get_parent(ui_batteryDeltaVBar), lv_obj_get_parent(ui_batteryTMaxBar) };
+    lv_obj_t *titles2[] = { ui_batteryVMaxLabel, ui_batteryVMinLabel, ui_batteryDeltaVLabel, ui_batteryTMaxLabel };
+    lv_obj_t *units[]   = { ui_batteryVMaxUnitLabel, ui_batteryVMinUnitLabel, ui_batteryDeltaVUnitLabel, ui_batteryTMaxUnitLabel };
+    lv_obj_t *bars[]    = { ui_batteryVMaxBar, ui_batteryVMinBar, ui_batteryDeltaVBar, ui_batteryTMaxBar };
     for (int i = 0; i < 4; i++) {
-        if (titles[i]) lv_obj_set_style_text_color(titles[i], ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-        if (bars[i]) {
-            lv_obj_set_style_bg_color(bars[i], ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_border_color(bars[i], ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_bg_color(bars[i], ui_theme_accent_energy(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+        if (cardPanels[i]) {
+            lv_obj_set_style_bg_color(cardPanels[i], ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_color(cardPanels[i], ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
         }
-        if (vals[i]) lv_obj_set_style_text_color(vals[i], ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (titles2[i]) lv_obj_set_style_text_color(titles2[i], ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (units[i])   lv_obj_set_style_text_color(units[i], ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (bars[i]) {
+            // zoneDir=0 for all four (no real threshold behind any of
+            // these - see this file's header comment), so refresh is just
+            // the flat track + accent indicator, same as ui_card_setBarNoData's
+            // "false" branch without the no-data override.
+            lv_obj_set_style_bg_color(bars[i], ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_color(bars[i], ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(bars[i], ui_theme_accent(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+        }
     }
-    // Status pill color is data-driven (charge/discharge/idle) - left alone
-    // here, same reasoning as the value labels.
+    ui_dock_refresh_theme(ui_batteryScreenDock, UI_DOCK_BMS);
+    // Value labels are data-driven and left alone here - they self-correct
+    // on their next natural data update, same reasoning as every other
+    // screen in this codebase.
 }
 
 void ui_batteryScreen_screen_destroy(void)
@@ -266,21 +251,30 @@ void ui_batteryScreen_screen_destroy(void)
     if (ui_batteryScreen) lv_obj_del(ui_batteryScreen);
 
     ui_batteryScreen = NULL;
+    ui_batterySocPanel = NULL;
+    ui_batterySocTitleLabel = NULL;
     ui_batterySocArc = NULL;
     ui_batterySocValLabel = NULL;
     ui_batterySocIconLabel = NULL;
+    ui_batteryStatusPanel = NULL;
     ui_batteryStatusPill = NULL;
     ui_batteryStatusLabel = NULL;
+    ui_batteryStatusPillState = UI_PILL_NEUTRAL;
     ui_batteryVMaxLabel = NULL;
     ui_batteryVMaxBar = NULL;
     ui_batteryVMaxValLabel = NULL;
+    ui_batteryVMaxUnitLabel = NULL;
     ui_batteryVMinLabel = NULL;
     ui_batteryVMinBar = NULL;
     ui_batteryVMinValLabel = NULL;
+    ui_batteryVMinUnitLabel = NULL;
     ui_batteryDeltaVLabel = NULL;
     ui_batteryDeltaVBar = NULL;
     ui_batteryDeltaVValLabel = NULL;
+    ui_batteryDeltaVUnitLabel = NULL;
     ui_batteryTMaxLabel = NULL;
     ui_batteryTMaxBar = NULL;
     ui_batteryTMaxValLabel = NULL;
+    ui_batteryTMaxUnitLabel = NULL;
+    ui_batteryScreenDock = NULL;
 }

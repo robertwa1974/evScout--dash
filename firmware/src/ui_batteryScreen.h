@@ -7,12 +7,14 @@ extern "C" {
 
 // SCREEN: ui_batteryScreen - cell-level BMS detail (renamed from
 // ui_bmsScreen 2026-09-14 as part of the Speed/Drive/Status/Battery split -
-// see waveshare-dash-build.md). Still JKBMS-style (holoduke/JKBMS): a large
-// SOC ring at top, a charging/discharging/idle status pill - but the
-// aggregate pack voltage/current bars moved to ui_statusScreen/
-// ui_driveScreen, and this screen's 4 bar rows are now genuinely cell-level:
-// Max Cell Voltage, Min Cell Voltage, Cell Delta V (computed), Max Cell
-// Temp - sourced from the VCU's BMS_Vmax/BMS_Vmin/BMS_Tmax SDO params
+// see waveshare-dash-build.md). Rebuilt onto the shared ui_card_grid.h 2x3
+// pattern (styling pass item 8, 2026-09-18) - SOC arc + status pill + Max/
+// Min Cell V + Cell Delta V + Max Cell Temp, six equal cards, same geometry
+// as Drive/Status/GPS/Charging. Still JKBMS-style (holoduke/JKBMS) in
+// spirit: pack-aggregate voltage/current bars live on ui_statusScreen/
+// ui_driveScreen, this screen is genuinely cell-level data - Max Cell
+// Voltage, Min Cell Voltage, Cell Delta V (computed), Max Cell Temp -
+// sourced from the VCU's BMS_Vmax/BMS_Vmin/BMS_Tmax SDO params
 // (PARAM_ID_BMS_VMAX/_VMIN/_TMAX), not the old pack-aggregate udc/idc.
 extern void ui_batteryScreen_screen_init(void);
 extern void ui_batteryScreen_screen_destroy(void);
@@ -27,6 +29,8 @@ extern void ui_batteryScreen_setStatus(float packCurrent);
 
 extern lv_obj_t * ui_batteryScreen;
 
+extern lv_obj_t * ui_batterySocPanel;
+extern lv_obj_t * ui_batterySocTitleLabel;
 extern lv_obj_t * ui_batterySocArc;
 extern lv_obj_t * ui_batterySocValLabel;
 // Small battery-level icon (LV_SYMBOL_BATTERY_FULL/3/2/1/EMPTY) below the
@@ -37,24 +41,29 @@ extern lv_obj_t * ui_batterySocValLabel;
 // version for a screen that keeps the arc).
 extern lv_obj_t * ui_batterySocIconLabel;
 
+extern lv_obj_t * ui_batteryStatusPanel;
 extern lv_obj_t * ui_batteryStatusPill;
 extern lv_obj_t * ui_batteryStatusLabel;
 
 extern lv_obj_t * ui_batteryVMaxLabel;
 extern lv_obj_t * ui_batteryVMaxBar;
 extern lv_obj_t * ui_batteryVMaxValLabel;
+extern lv_obj_t * ui_batteryVMaxUnitLabel;
 
 extern lv_obj_t * ui_batteryVMinLabel;
 extern lv_obj_t * ui_batteryVMinBar;
 extern lv_obj_t * ui_batteryVMinValLabel;
+extern lv_obj_t * ui_batteryVMinUnitLabel;
 
 extern lv_obj_t * ui_batteryDeltaVLabel;
 extern lv_obj_t * ui_batteryDeltaVBar;
 extern lv_obj_t * ui_batteryDeltaVValLabel;
+extern lv_obj_t * ui_batteryDeltaVUnitLabel;
 
 extern lv_obj_t * ui_batteryTMaxLabel;
 extern lv_obj_t * ui_batteryTMaxBar;
 extern lv_obj_t * ui_batteryTMaxValLabel;
+extern lv_obj_t * ui_batteryTMaxUnitLabel;
 
 #ifdef __cplusplus
 } /*extern "C"*/

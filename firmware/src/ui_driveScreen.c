@@ -70,9 +70,9 @@ lv_obj_t * ui_driveRegenBar = NULL;
 
 lv_obj_t * ui_driveSparePanel = NULL;
 
-#define GRID_PANEL_W 388
-#define GRID_PANEL_H 149
-#define GRID_GAP     8
+// Persistent bottom nav dock (styling/UX pass Phase 5, 2026-09-18) - see
+// ui_dock.h. Drive is inside the Telemetry group (home screen: Speed).
+static lv_obj_t * ui_driveScreenDock = NULL;
 
 void ui_event_driveScreen(lv_event_t * e)
 {
@@ -90,76 +90,20 @@ void ui_event_driveScreen(lv_event_t * e)
     }
 }
 
-// Themed panel "card" at a grid cell, with a title label top-left - same
-// pattern as the old ui_mainScreen.c's createPanel().
-static lv_obj_t *createPanel(lv_obj_t *parent, int16_t x, int16_t y, const char *title, lv_obj_t **outTitleLabel) {
-    lv_obj_t *panel = lv_obj_create(parent);
-    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(panel, GRID_PANEL_W, GRID_PANEL_H);
-    lv_obj_set_pos(panel, x, y);
-    lv_obj_set_style_pad_all(panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(panel, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(panel, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(panel, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_color(panel, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(panel, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    lv_obj_t *titleLabel = lv_label_create(panel);
-    lv_obj_set_pos(titleLabel, 12, 8);
-    lv_label_set_text(titleLabel, title);
-    lv_obj_set_style_text_color(titleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(titleLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    if (outTitleLabel) *outTitleLabel = titleLabel;
-    return panel;
-}
-
-// Value + unit, centered - same pattern as ui_mainScreen.c's
-// createValueAndUnit(), just re-centered for this grid's shorter 149px panel.
-static void createValueAndUnit(lv_obj_t *panel, lv_obj_t **outVal, lv_obj_t **outUnit, const char *unitText) {
-    lv_obj_t *val = lv_label_create(panel);
-    lv_obj_align(val, LV_ALIGN_CENTER, 0, -8);
-    lv_label_set_text(val, "0");
-    lv_obj_set_style_text_color(val, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(val, &font_montserrat_extrabold_32, LV_PART_MAIN | LV_STATE_DEFAULT);
-    *outVal = val;
-
-    lv_obj_t *unit = lv_label_create(panel);
-    lv_obj_align(unit, LV_ALIGN_CENTER, 0, 28);
-    lv_label_set_text(unit, unitText);
-    lv_obj_set_style_text_color(unit, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(unit, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
-    *outUnit = unit;
-}
-
-// Linear-strip lv_bar below a panel's digital readout - same pattern as
-// ui_mainScreen.c's createSignedBar(), re-centered for the 149px panel.
-static lv_obj_t *createBar(lv_obj_t *panel, bool symmetrical, int32_t rangeMin, int32_t rangeMax) {
-    lv_obj_t *bar = lv_bar_create(panel);
-    if (symmetrical) lv_bar_set_mode(bar, LV_BAR_MODE_SYMMETRICAL);
-    lv_bar_set_range(bar, rangeMin, rangeMax);
-    lv_bar_set_value(bar, symmetrical ? 0 : rangeMin, LV_ANIM_OFF);
-    lv_obj_set_size(bar, 320, 14);
-    lv_obj_align(bar, LV_ALIGN_CENTER, 0, 58);
-    lv_obj_set_style_radius(bar, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(bar, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(bar, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_color(bar, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(bar, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(bar, 4, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(bar, ui_theme_accent(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(bar, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    return bar;
-}
-
+// Styling pass (2026-09-18): panel/value/bar construction now goes through
+// ui_card_grid.h's shared ui_card_create*() instead of a file-local copy -
+// see that header for why (4 files hand-duplicated this identically).
+//
 // Big centered text value for a discrete enum state (gear selection, motor
-// mode) - no bar, this isn't a continuous quantity.
+// mode) - no bar, this isn't a continuous quantity. Font weight audit item
+// 2: this is label/state text (not a numeric hero value), so it gets the
+// SemiBold-24 weight, not ExtraBold.
 static lv_obj_t *createEnumValue(lv_obj_t *panel) {
     lv_obj_t *val = lv_label_create(panel);
     lv_obj_align(val, LV_ALIGN_CENTER, 0, 12);
     lv_label_set_text(val, "--");
     lv_obj_set_style_text_color(val, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(val, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(val, &font_montserrat_semibold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
     return val;
 }
 
@@ -172,29 +116,35 @@ void ui_driveScreen_screen_init(void)
 
     // TODO: bar ranges below are placeholder defaults - tune to your
     // actual motor/inverter/pack ratings once known.
-    ui_drivePowerPanel = createPanel(ui_driveScreen, GRID_GAP, GRID_GAP, ICON_BOLT " POWER", &ui_drivePowerTitleLabel);
-    createValueAndUnit(ui_drivePowerPanel, &ui_drivePowerValLabel, &ui_drivePowerUnitLabel, "kW");
-    ui_drivePowerBar = createBar(ui_drivePowerPanel, true, -30, 150);
+    // zoneDir=0 on all three: no warningSet threshold exists for power,
+    // pack current, or regen limit (see zombie_updaters.h's warning_set -
+    // only lowSoc/motorTemp/heatsinkTemp/packVLow are real thresholds) -
+    // bar gradient/flat audit, styling pass item 5.
+    ui_drivePowerPanel = ui_card_createPanel(ui_driveScreen, GRID_GAP, GRID_GAP, ICON_BOLT " POWER", &ui_drivePowerTitleLabel);
+    ui_card_createValueAndUnit(ui_drivePowerPanel, &ui_drivePowerValLabel, &ui_drivePowerUnitLabel, "kW");
+    ui_drivePowerBar = ui_card_createBar(ui_drivePowerPanel, true, -30, 150, 0);
 
-    ui_driveCurrPanel = createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP, "PACK CURRENT", &ui_driveCurrTitleLabel);
-    createValueAndUnit(ui_driveCurrPanel, &ui_driveCurrValLabel, &ui_driveCurrUnitLabel, "A");
-    ui_driveCurrBar = createBar(ui_driveCurrPanel, true, -150, 300);
+    ui_driveCurrPanel = ui_card_createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP, "PACK CURRENT", &ui_driveCurrTitleLabel);
+    ui_card_createValueAndUnit(ui_driveCurrPanel, &ui_driveCurrValLabel, &ui_driveCurrUnitLabel, "A");
+    ui_driveCurrBar = ui_card_createBar(ui_driveCurrPanel, true, -150, 300, 0);
 
     // "GEAR" not "GEAR SELECTION" - label-shortening pass, 2026-09-14 (see
     // waveshare-dash-build.md) - terser is better for a glance-first
     // dashboard even where the longer text technically still fit.
-    ui_driveGearPanel = createPanel(ui_driveScreen, GRID_GAP, GRID_GAP * 2 + GRID_PANEL_H, "GEAR", &ui_driveGearTitleLabel);
+    ui_driveGearPanel = ui_card_createPanel(ui_driveScreen, GRID_GAP, GRID_GAP * 2 + GRID_PANEL_H, "GEAR", &ui_driveGearTitleLabel);
     ui_driveGearValLabel = createEnumValue(ui_driveGearPanel);
 
-    ui_driveMotorModePanel = createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 2 + GRID_PANEL_H, "MOTOR MODE", &ui_driveMotorModeTitleLabel);
+    ui_driveMotorModePanel = ui_card_createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 2 + GRID_PANEL_H, "MOTOR MODE", &ui_driveMotorModeTitleLabel);
     ui_driveMotorModeValLabel = createEnumValue(ui_driveMotorModePanel);
 
-    ui_driveRegenPanel = createPanel(ui_driveScreen, GRID_GAP, GRID_GAP * 3 + GRID_PANEL_H * 2, "REGEN LIMIT", &ui_driveRegenTitleLabel);
-    createValueAndUnit(ui_driveRegenPanel, &ui_driveRegenValLabel, &ui_driveRegenUnitLabel, "%");
-    ui_driveRegenBar = createBar(ui_driveRegenPanel, false, 0, 100);
+    ui_driveRegenPanel = ui_card_createPanel(ui_driveScreen, GRID_GAP, GRID_GAP * 3 + GRID_PANEL_H * 2, "REGEN LIMIT", &ui_driveRegenTitleLabel);
+    ui_card_createValueAndUnit(ui_driveRegenPanel, &ui_driveRegenValLabel, &ui_driveRegenUnitLabel, "%");
+    ui_driveRegenBar = ui_card_createBar(ui_driveRegenPanel, false, 0, 100, 0);
 
     // Spare slot, deliberately empty - reserved for a future field.
-    ui_driveSparePanel = createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 3 + GRID_PANEL_H * 2, "", NULL);
+    ui_driveSparePanel = ui_card_createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 3 + GRID_PANEL_H * 2, "", NULL);
+
+    ui_driveScreenDock = ui_dock_create(ui_driveScreen, UI_DOCK_TELEMETRY);
 
     lv_obj_add_event_cb(ui_driveScreen, ui_event_driveScreen, LV_EVENT_ALL, NULL);
 }
@@ -223,6 +173,7 @@ void ui_driveScreen_refresh_theme(void)
         lv_obj_set_style_border_color(bars[i], ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(bars[i], ui_theme_accent(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
     }
+    ui_dock_refresh_theme(ui_driveScreenDock, UI_DOCK_TELEMETRY);
     // Value labels (power/current/regen numerics + gear/motorMode enum text)
     // are left alone here - fastUpdate/midUpdate/slowUpdate recompute their
     // color from the current theme on every data update, same reasoning as
@@ -256,4 +207,5 @@ void ui_driveScreen_screen_destroy(void)
     ui_driveRegenUnitLabel = NULL;
     ui_driveRegenBar = NULL;
     ui_driveSparePanel = NULL;
+    ui_driveScreenDock = NULL;
 }

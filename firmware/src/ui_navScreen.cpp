@@ -33,19 +33,21 @@
 // handler's comment. Router::route() needs a real ROUTE.bin (CAR
 // profile) on the SD card to succeed - if that file doesn't exist yet,
 // routing fails gracefully (RouterResult != OK) and the turn banner shows
-// "NO ROUTE", same "false is fine, just means nothing there" convention
+// "PRESS HOME" (styling pass item 16, 2026-09-18 - was "NO ROUTE", changed
+// to match the actual no-route call to action rather than a bare status
+// word), same "false is fine, just means nothing there" convention
 // nav_tile_load() already uses.
 //
 // No SquareLine project (same as every other hand-written screen here).
 //
-// Navigation: inserted between GPS and Dyno LIVE (2026-09-14) - current
-// topology: ... <-> Charging <-> GPS <-> GPS NAV <-> Dyno LIVE -> Dyno
-// RESULTS. Physical swipe LEFT -> GPS (back), physical swipe RIGHT -> Dyno
-// LIVE (forward). This board reports gesture direction inverted from the
+// Navigation: physical swipe LEFT -> GPS (back, stays - both in the
+// dock's GPS group). Physical swipe RIGHT to Dyno LIVE is REMOVED
+// (styling/UX pass Phase 5, 2026-09-18) - cross-group, Dyno is dock-
+// reachable now (see ui_dock.h's mapping comment and the plan's swipe-
+// removal table). This board reports gesture direction inverted from the
 // physical swipe (see CLAUDE.md's "Touch gesture direction") - the code
-// checks LV_DIR_RIGHT for the physical-LEFT swipe and LV_DIR_LEFT for the
-// physical-RIGHT swipe. Intentional; don't "fix" it without re-verifying
-// on hardware first.
+// checks LV_DIR_RIGHT for the physical-LEFT swipe. Intentional; don't
+// "fix" it without re-verifying on hardware first.
 // ============================================================================
 
 #include "ui.h"
@@ -84,6 +86,10 @@ lv_obj_t * ui_navHeadingLabel = NULL;
 static lv_obj_t * ui_navEtaLabel = NULL;
 static lv_obj_t * ui_navDistRemainingLabel = NULL;
 
+// Persistent bottom nav dock (styling/UX pass Phase 5, 2026-09-18) - see
+// ui_dock.h. GPS NAV is inside the GPS dock group (home screen: GPS).
+static lv_obj_t * ui_navScreenDock = NULL;
+
 // Swipe-nav position dots - purely decorative, this screen's own visual
 // convention (no other screen in this project has this pattern yet).
 // Matches the current 11-screen topology (CLAUDE.md's "Project overview"
@@ -98,7 +104,10 @@ static lv_obj_t * ui_navDots[NAV_TOPOLOGY_SCREEN_COUNT];
 #define TOPBAR_H 32
 #define CANVAS_W 800
 #define STRIP_H  90
-#define CANVAS_H (480 - TOPBAR_H - STRIP_H)
+// Shrunk by UI_DOCK_H (styling/UX pass Phase 5, 2026-09-18) to leave room
+// for the persistent bottom nav dock - was a flat (480 - TOPBAR_H -
+// STRIP_H), which used the full screen height with zero slack.
+#define CANVAS_H (480 - TOPBAR_H - STRIP_H - UI_DOCK_H)
 
 #define TRAIL_MAX_POINTS 120  // ~2 minutes of trail at the ~1Hz GPS fix rate
 #define METERS_PER_DEG_LAT 111320.0
@@ -159,7 +168,7 @@ static bool routeComputing = false;   // true from button press until
                                         // processPendingRoute() finishes -
                                         // lets updateTurnGuidance() show a
                                         // "ROUTING HOME..." state instead of
-                                        // "NO ROUTE" during the multi-second
+                                        // "PRESS HOME" during the multi-second
                                         // (sometimes 20+s, see this file's
                                         // header) blocking computation
 static double routeComputeLat = 0, routeComputeLon = 0;
@@ -372,7 +381,11 @@ static void loadTile(uint32_t tx, uint32_t ty, double lat, double lon) {
         buildTileLayer();
         if (ui_navScaleLabel) lv_label_set_text_fmt(ui_navScaleLabel, "~%.0fm across", CANVAS_W * METERS_PER_PIXEL);
     } else if (ui_navScaleLabel) {
-        lv_label_set_text_fmt(ui_navScaleLabel, "~%.0fm across - no map tiles yet", CANVAS_W * METERS_PER_PIXEL);
+        // Styling pass item 16: was "~%.0fm across - no map tiles yet" -
+        // exposed internal implementation detail ("tiles") to the driver,
+        // and a scale distance is meaningless without a map rendered to
+        // scale against, so dropped rather than kept alongside a caveat.
+        lv_label_set_text(ui_navScaleLabel, ICON_LOCATION_ON " NO MAP DATA HERE");
     }
     // Reposition immediately against the fix that triggered this load,
     // rather than waiting for the next addPoint() (~1s away at typical
@@ -528,11 +541,8 @@ void ui_event_navScreen(lv_event_t * e)
         _ui_screen_change(&ui_gpsScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_gpsScreen_screen_init);
         _ui_screen_delete(&ui_navScreen);
     }
-    if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_LEFT) {
-        lv_indev_wait_release(lv_indev_get_act());
-        _ui_screen_change(&ui_dynoLiveScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_dynoLiveScreen_screen_init);
-        _ui_screen_delete(&ui_navScreen);
-    }
+    // Physical-RIGHT swipe to Dyno LIVE REMOVED here - see this file's
+    // header comment (styling/UX pass Phase 5).
 }
 
 // The "phone home" button - the entire routing trigger for this screen
@@ -675,16 +685,25 @@ void ui_navScreen_screen_init(void)
     lv_obj_set_size(ui_navHereDot, 20, 20);
     lv_obj_align(ui_navHereDot, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_radius(ui_navHereDot, LV_RADIUS_CIRCLE, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_navHereDot, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    // Styling pass, 2026-09-18 (item 9): was ui_theme_text_primary(), which
+    // resolves to pure white (#FFFFFF) in Day mode - the one genuinely-
+    // white element on this screen (the trail line and this dot's own
+    // border already used ui_theme_accent()). Now solid accent-colored
+    // fill+border, matching every other "live/active" indicator on this
+    // screen instead of standing out as plain white wireframe.
+    lv_obj_set_style_bg_color(ui_navHereDot, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_navHereDot, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(ui_navHereDot, 3, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(ui_navHereDot, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_navScaleLabel = lv_label_create(ui_navCanvas);
     lv_obj_align(ui_navScaleLabel, LV_ALIGN_BOTTOM_LEFT, 12, -8);
-    lv_label_set_text_fmt(ui_navScaleLabel, "~%.0fm across - no map tiles yet", CANVAS_W * METERS_PER_PIXEL);
+    // Styling pass item 16 (see loadTile()'s matching comment): no tile
+    // loaded yet at boot, so the honest default is "no map data" rather
+    // than a scale figure with nothing to scale.
+    lv_label_set_text(ui_navScaleLabel, ICON_LOCATION_ON " NO MAP DATA HERE");
     lv_obj_set_style_text_color(ui_navScaleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_navScaleLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navScaleLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // "Phone home" button - the sole routing trigger on this screen (see
     // this file's header comment). Sized to this project's own vehicle-
@@ -715,7 +734,7 @@ void ui_navScreen_screen_init(void)
     ui_navHomeBtnLabel = lv_label_create(ui_navHomeBtn);
     lv_label_set_text(ui_navHomeBtnLabel, LV_SYMBOL_HOME "\nHOME");
     lv_obj_set_style_text_align(ui_navHomeBtnLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_navHomeBtnLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navHomeBtnLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_center(ui_navHomeBtnLabel);
     lv_obj_add_event_cb(ui_navHomeBtn, ui_event_navHomeBtn, LV_EVENT_CLICKED, NULL);
 
@@ -739,7 +758,11 @@ void ui_navScreen_screen_init(void)
 
     ui_navTurnDistLabel = lv_label_create(ui_navTurnBanner);
     lv_obj_align(ui_navTurnDistLabel, LV_ALIGN_RIGHT_MID, -4, 0);
-    lv_label_set_text(ui_navTurnDistLabel, "NO ROUTE");
+    // Styling pass item 16: init default now matches updateTurnGuidance()'s
+    // own no-route text ("PRESS HOME") instead of the stale "NO ROUTE" this
+    // was left showing until the first GPS fix triggered a real update -
+    // same string every other no-route state on this screen already uses.
+    lv_label_set_text(ui_navTurnDistLabel, "PRESS HOME");
     lv_obj_set_style_text_color(ui_navTurnDistLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_navTurnDistLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -760,7 +783,10 @@ void ui_navScreen_screen_init(void)
     lv_obj_align(ui_navStatusLabel, LV_ALIGN_TOP_LEFT, 24, 6);
     lv_label_set_text(ui_navStatusLabel, "NO FIX");
     lv_obj_set_style_text_color(ui_navStatusLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_navStatusLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+    // Font weight audit (item 2): state text ("NO FIX"/"FIX - N sats"),
+    // same role as the GPS screen's fix pill - SemiBold, not the numeric
+    // ExtraBold used for Speed/Heading on either side of it.
+    lv_obj_set_style_text_font(ui_navStatusLabel, &font_montserrat_semibold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_navSpeedLabel = lv_label_create(ui_navStrip);
     lv_obj_align(ui_navSpeedLabel, LV_ALIGN_TOP_MID, 0, 6);
@@ -779,13 +805,13 @@ void ui_navScreen_screen_init(void)
     lv_obj_align(ui_navEtaLabel, LV_ALIGN_BOTTOM_LEFT, 24, -8);
     lv_label_set_text(ui_navEtaLabel, "ETA --:--");
     lv_obj_set_style_text_color(ui_navEtaLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_navEtaLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navEtaLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_navDistRemainingLabel = lv_label_create(ui_navStrip);
     lv_obj_align(ui_navDistRemainingLabel, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_label_set_text(ui_navDistRemainingLabel, "-- remaining");
     lv_obj_set_style_text_color(ui_navDistRemainingLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_navDistRemainingLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_navDistRemainingLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     lv_obj_t * dotsRow = lv_obj_create(ui_navStrip);
     lv_obj_clear_flag(dotsRow, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
@@ -808,6 +834,11 @@ void ui_navScreen_screen_init(void)
         ui_navDots[i] = dot;
     }
 
+    // Child of the SCREEN, not the canvas (ui_navCanvas) - CANVAS_H was
+    // shrunk above precisely so this dock sits below the canvas/strip, not
+    // over them.
+    ui_navScreenDock = ui_dock_create(ui_navScreen, UI_DOCK_GPS);
+
     lv_obj_add_event_cb(ui_navScreen, ui_event_navScreen, LV_EVENT_ALL, NULL);
 }
 
@@ -820,7 +851,15 @@ void ui_navScreen_refresh_theme(void)
     if (ui_navHomeBtn) lv_obj_set_style_bg_color(ui_navHomeBtn, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navCanvas) lv_obj_set_style_bg_color(ui_navCanvas, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navTrailLine) lv_obj_set_style_line_color(ui_navTrailLine, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (ui_navHereDot) lv_obj_set_style_border_color(ui_navHereDot, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    if (ui_navHereDot) {
+        // Both fill and border are ui_theme_accent() now (see the create-
+        // time comment) - this used to only re-touch the border, leaving
+        // the fill stale after a day/night toggle until the next screen
+        // rebuild. Fixed alongside the item-9 white->accent fill change,
+        // same underlying oversight.
+        lv_obj_set_style_bg_color(ui_navHereDot, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_color(ui_navHereDot, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
     if (ui_navScaleLabel) lv_obj_set_style_text_color(ui_navScaleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navTurnBanner) {
         lv_obj_set_style_bg_color(ui_navTurnBanner, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -833,6 +872,7 @@ void ui_navScreen_refresh_theme(void)
         bool isThis = (i == NAV_TOPOLOGY_THIS_INDEX);
         lv_obj_set_style_bg_color(ui_navDots[i], isThis ? ui_theme_accent() : ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
     }
+    ui_dock_refresh_theme(ui_navScreenDock, UI_DOCK_GPS);
     // Status/speed/heading/turn-dist/ETA/distance-remaining label text/
     // colors are data-driven and left alone here - they self-correct on
     // their next natural data update, same reasoning as every other
@@ -872,6 +912,7 @@ void ui_navScreen_screen_destroy(void)
     ui_navHeadingLabel = NULL;
     ui_navEtaLabel = NULL;
     ui_navDistRemainingLabel = NULL;
+    ui_navScreenDock = NULL;
     for (int i = 0; i < NAV_TOPOLOGY_SCREEN_COUNT; i++) ui_navDots[i] = NULL;
     trailCount = 0;
     trailHead = 0;

@@ -25,10 +25,17 @@ lv_obj_t * ui_dynoLiveScreen = NULL;
 
 static lv_obj_t * statePill = NULL;
 static lv_obj_t * stateLabel = NULL;
+// Tracks the pill's current semantic state for refresh_theme() - see
+// ui_gpsScreen.c's identical pattern/comment for why.
+static ui_pill_state_t statePillState = UI_PILL_NEUTRAL;
 static lv_obj_t * timerLabel = NULL;
 static lv_obj_t * timerUnitLabel = NULL;
 static lv_obj_t * speedLabel = NULL;
 static lv_timer_t * sampleTimer = NULL;
+
+// Persistent bottom nav dock (styling/UX pass Phase 5, 2026-09-18) - see
+// ui_dock.h. Dyno LIVE is this group's home screen (also covers RESULTS).
+static lv_obj_t * ui_dynoLiveScreenDock = NULL;
 
 // TODO: tune to your vehicle/pack. DYNO_LAUNCH_KPH is the "did it start
 // moving" proxy standing in for real accelerometer launch detection.
@@ -43,16 +50,23 @@ static uint32_t startTick = 0;
 static void setState(dyno_state_t s) {
     state = s;
     const char *text;
-    lv_color_t color;
+    // Styling pass: migrated onto ui_status_pill.h's 4-state model - the
+    // mapping below (READY=NEUTRAL, ARMED=CAUTION, RUNNING/DONE=ACTIVE) is
+    // exactly what ui_status_pill.h's own header comment documents for
+    // this screen. Two real color changes from the pre-migration version:
+    // ARMED was ui_theme_accent() (cyan), now CAUTION/amber - reads as "a
+    // notable, not-yet-critical state," which is what ARMED actually is;
+    // DONE was ui_theme_warning() (red), now ACTIVE/green, confirmed with
+    // Rob 2026-09-18 - a completed run is a success, not a fault (styling
+    // pass item 15's strict "red means a real fault" rule).
     switch (s) {
-        case DYNO_READY:   text = "READY - tap to arm"; color = ui_theme_panel_border(); break;
-        case DYNO_ARMED:   text = "ARMED - go!";         color = ui_theme_accent();       break;
-        case DYNO_RUNNING: text = "RUNNING";             color = ui_theme_good();         break;
-        case DYNO_DONE:    text = "DONE";                color = ui_theme_warning();      break;
-        default:           text = "";                    color = ui_theme_panel_border(); break;
+        case DYNO_READY:   text = "READY - tap to arm"; statePillState = UI_PILL_NEUTRAL; break;
+        case DYNO_ARMED:   text = "ARMED - go!";         statePillState = UI_PILL_CAUTION; break;
+        case DYNO_RUNNING: text = "RUNNING";             statePillState = UI_PILL_ACTIVE;  break;
+        case DYNO_DONE:    text = "DONE";                statePillState = UI_PILL_ACTIVE;  break;
+        default:           text = "";                    statePillState = UI_PILL_NEUTRAL; break;
     }
-    if (stateLabel) lv_label_set_text(stateLabel, text);
-    if (statePill) lv_obj_set_style_bg_color(statePill, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_pill_setState(statePill, stateLabel, statePillState, text);
 }
 
 static void sampleTimerCb(lv_timer_t *timer) {
@@ -109,14 +123,17 @@ static void screenTapCb(lv_event_t *e) {
     // ARMED/RUNNING: ignore taps - don't let an accidental touch abort a pull.
 }
 
+// Physical-RIGHT swipe to GPS NAV REMOVED (styling/UX pass Phase 5,
+// 2026-09-18) - cross-group, GPS NAV is reachable via the dock's GPS icon
+// now (see ui_dock.h's mapping comment and the plan's swipe-removal
+// table). This screen has no swipe links left at all - same situation as
+// Battery/BMS (see ui_batteryScreen.c), reachable only via the dock's Dyno
+// icon; the LIVE->RESULTS transition was always automatic on run
+// completion, never swipe-driven, so nothing else needed a swipe here to
+// begin with.
 void ui_event_dynoLiveScreen(lv_event_t * e)
 {
-    lv_event_code_t event_code = lv_event_get_code(e);
-    if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_RIGHT) {
-        lv_indev_wait_release(lv_indev_get_act());
-        _ui_screen_change(&ui_navScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_navScreen_screen_init);
-        _ui_screen_delete(&ui_dynoLiveScreen);
-    }
+    (void)e;
 }
 
 void ui_dynoLiveScreen_screen_init(void)
@@ -126,19 +143,14 @@ void ui_dynoLiveScreen_screen_init(void)
     lv_obj_set_style_bg_color(ui_dynoLiveScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_dynoLiveScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    statePill = lv_obj_create(ui_dynoLiveScreen);
-    lv_obj_clear_flag(statePill, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(statePill, 340, 60);
+    // Styling pass: migrated onto ui_status_pill.h's shared pill (was a
+    // hand-built lv_obj with no fade transition at all - one of the 2 of
+    // 5 pills that previously snapped instantly). Label text is state/
+    // status text, not a numeric value, so SemiBold-24 per the font-
+    // weight audit (item 2).
+    statePill = ui_pill_create(ui_dynoLiveScreen, 340, 60, 30, &stateLabel, &font_montserrat_semibold_24);
     lv_obj_align(statePill, LV_ALIGN_TOP_MID, 0, 24);
-    lv_obj_set_style_radius(statePill, 30, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_width(statePill, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(statePill, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    stateLabel = lv_label_create(statePill);
-    lv_obj_center(stateLabel);
-    lv_label_set_text(stateLabel, "READY - tap to arm");
-    lv_obj_set_style_text_color(stateLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(stateLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_pill_setState(statePill, stateLabel, UI_PILL_NEUTRAL, "READY - tap to arm");
 
     // Dominant timer numeral - "minimal chrome" means dominance comes from
     // negative space, not a bigger font than the hero tier (CLAUDE.md's
@@ -153,7 +165,7 @@ void ui_dynoLiveScreen_screen_init(void)
     lv_obj_align(timerUnitLabel, LV_ALIGN_CENTER, 0, 40);
     lv_label_set_text(timerUnitLabel, "seconds");
     lv_obj_set_style_text_color(timerUnitLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(timerUnitLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(timerUnitLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     speedLabel = lv_label_create(ui_dynoLiveScreen);
     lv_obj_align(speedLabel, LV_ALIGN_CENTER, 0, 100);
@@ -163,6 +175,8 @@ void ui_dynoLiveScreen_screen_init(void)
 
     state = DYNO_READY;
     dynoRunCount = 0;
+
+    ui_dynoLiveScreenDock = ui_dock_create(ui_dynoLiveScreen, UI_DOCK_DYNO);
 
     lv_obj_add_event_cb(ui_dynoLiveScreen, ui_event_dynoLiveScreen, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_dynoLiveScreen, screenTapCb, LV_EVENT_CLICKED, NULL);
@@ -180,6 +194,7 @@ void ui_dynoLiveScreen_refresh_theme(void)
     if (timerUnitLabel) lv_obj_set_style_text_color(timerUnitLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (speedLabel) lv_obj_set_style_text_color(speedLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     setState(state);  // re-applies the current state's themed pill color
+    ui_dock_refresh_theme(ui_dynoLiveScreenDock, UI_DOCK_DYNO);
 }
 
 void ui_dynoLiveScreen_screen_destroy(void)
@@ -196,4 +211,6 @@ void ui_dynoLiveScreen_screen_destroy(void)
     timerLabel = NULL;
     timerUnitLabel = NULL;
     speedLabel = NULL;
+    statePillState = UI_PILL_NEUTRAL;
+    ui_dynoLiveScreenDock = NULL;
 }

@@ -1,6 +1,9 @@
 #ifndef UI_GPSSCREEN_H
 #define UI_GPSSCREEN_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,6 +19,11 @@ extern void ui_gpsScreen_screen_init(void);
 extern void ui_gpsScreen_screen_destroy(void);
 extern void ui_event_gpsScreen(lv_event_t * e);
 extern void ui_gpsScreen_refresh_theme(void);
+// Sets the GPS-status pill + satellite-count label from zombie_updaters.cpp
+// - see ui_gpsScreen.c's definition for why this is a setter rather than
+// that file touching the pill/label directly (pill-state tracking for
+// refresh_theme(), same pattern as ui_chargingScreen_setStatus()).
+extern void ui_gpsScreen_setStatus(bool hasFix, uint8_t sats);
 
 extern lv_obj_t * ui_gpsScreen;
 

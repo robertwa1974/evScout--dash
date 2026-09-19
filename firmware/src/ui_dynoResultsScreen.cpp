@@ -33,6 +33,10 @@ static lv_obj_t * legendRoadLabel = NULL;
 static lv_obj_t * legendElecSwatch = NULL;
 static lv_obj_t * legendElecLabel = NULL;
 
+// Persistent bottom nav dock (styling/UX pass Phase 5, 2026-09-18) - see
+// ui_dock.h. Dyno RESULTS is inside the Dyno group (home screen: LIVE).
+static lv_obj_t * ui_dynoResultsScreenDock = NULL;
+
 void ui_event_dynoResultsScreen(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -91,9 +95,11 @@ void ui_dynoResultsScreen_screen_init(void)
     lv_obj_set_style_text_font(effLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // --- Chart ---
+    // Height 260, not 300 (styling/UX pass Phase 5, 2026-09-18) - shrunk so
+    // the x-axis label below it clears the new 72px bottom nav dock.
     chart = lv_chart_create(ui_dynoResultsScreen);
     lv_obj_set_pos(chart, 40, 100);
-    lv_obj_set_size(chart, 560, 300);
+    lv_obj_set_size(chart, 560, 260);
     lv_chart_set_type(chart, LV_CHART_TYPE_SCATTER);
     lv_obj_set_style_bg_color(chart, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(chart, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -182,6 +188,8 @@ void ui_dynoResultsScreen_screen_init(void)
     lv_label_set_text_fmt(peakElecLabel, "Peak electrical: %.1f kW", peakElec);
     lv_label_set_text_fmt(effLabel, "Efficiency: %.0f%%", efficiency);
 
+    ui_dynoResultsScreenDock = ui_dock_create(ui_dynoResultsScreen, UI_DOCK_DYNO);
+
     lv_obj_add_event_cb(ui_dynoResultsScreen, ui_event_dynoResultsScreen, LV_EVENT_ALL, NULL);
 }
 
@@ -196,6 +204,7 @@ void ui_dynoResultsScreen_refresh_theme(void)
     if (xAxisLabel) lv_obj_set_style_text_color(xAxisLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (yAxisLabel) lv_obj_set_style_text_color(yAxisLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (effLabel) lv_obj_set_style_text_color(effLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_dock_refresh_theme(ui_dynoResultsScreenDock, UI_DOCK_DYNO);
     // Series colors, peak-callout colors, and the legend swatches are left
     // as their creation-time theme snapshot - this screen is rebuilt fresh
     // every run anyway (see screen_init), so it'll pick up the current
@@ -218,4 +227,5 @@ void ui_dynoResultsScreen_screen_destroy(void)
     legendRoadLabel = NULL;
     legendElecSwatch = NULL;
     legendElecLabel = NULL;
+    ui_dynoResultsScreenDock = NULL;
 }

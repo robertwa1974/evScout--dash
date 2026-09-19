@@ -1,6 +1,9 @@
 #include "zombie_updaters.h"
 #include "can_trace.h"
 #include "gps_driver.h"
+#include "ui_can_freshness.h"
+#include "ui_card_grid.h"
+#include "ui_shutdown.h"
 #include <math.h>
 
 ESP32S3_TWAI can;
@@ -156,12 +159,14 @@ void TaskCANReceiver(void *pvParameters) {
                     if (sdoParseResponse(data, length, &paramId, &rawValue)) {
                         if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
                             applySdoValue(paramId, rawValue);
+                            ui_can_freshness_notifyFrame();
                             xSemaphoreGive(dataMutex);
                         }
                     }
                 } else {
                     if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
                         decodeBroadcastFrame(id, data, length);
+                        ui_can_freshness_notifyFrame();
                         xSemaphoreGive(dataMutex);
                     }
                 }
@@ -343,6 +348,8 @@ void midUpdate() {
 }
 
 void slowUpdate() {
+    ui_can_freshness_tick();
+
     static uint32_t lastGen = 0;
     bool forcePush = (lastGen != uiGeneration);
 
@@ -366,6 +373,13 @@ void slowUpdate() {
     bool clockChanged = false, clockHasFix = false;
     uint8_t clockHour = 0, clockMinute = 0;
 
+    // Fault banner (styling pass Phase 7) needs the CURRENT value every
+    // tick, not just on change - a CAN dropout is detected purely by time
+    // passing with no new frame, which the changed-flag pattern above
+    // can't express. Read unconditionally below, not gated behind the
+    // early-return further down.
+    int curMotorTemp = 0, curHeatsinkTemp = 0, curLastErr = 0;
+
     if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
         if (forcePush) lastGen = uiGeneration;
         if (myData.soc != old_myData.soc || forcePush) {
@@ -377,6 +391,8 @@ void slowUpdate() {
         if (myData.heatsinkTemp != old_myData.heatsinkTemp || forcePush) {
             hsTChanged = true; hsT = myData.heatsinkTemp; old_myData.heatsinkTemp = myData.heatsinkTemp;
         }
+        curMotorTemp = myData.motorTemp;
+        curHeatsinkTemp = myData.heatsinkTemp;
         if (myData.packVoltage != old_myData.packVoltage || forcePush) {
             voltChanged = true; volt = myData.packVoltage; old_myData.packVoltage = myData.packVoltage;
         }
@@ -407,16 +423,20 @@ void slowUpdate() {
             tMaxChanged = true; cellTMax = myData.cellTMax; old_myData.cellTMax = myData.cellTMax;
         }
         if (myData.opmode != old_myData.opmode || forcePush) {
-            // TODO: also meant to drive a fault/status banner - no such
-            // widget exists yet (deferred). opmode itself IS now consumed
-            // below, by the Charging screen's status pill.
+            // TODO: opmode itself was also once considered as a fault-
+            // banner input, separate from the lastErr/overtemp/CAN-dropout
+            // set ui_fault_banner.h actually wires (Phase 7, 2026-09-18) -
+            // opmode is a normal operating-mode enum (Off/Run/Precharge/
+            // PchFail/Charge), not itself a fault signal, so it was left
+            // out of that set; still just consumed below, by the Charging
+            // screen's status pill.
             chgStatusChanged = true;
             old_myData.opmode = myData.opmode;
         }
         if (myData.lastErr != old_myData.lastErr) {
-            // TODO: same as opmode above.
             old_myData.lastErr = myData.lastErr;
         }
+        curLastErr = myData.lastErr;
         if (myData.chargeSetpointV != old_myData.chargeSetpointV || forcePush) {
             setpointChanged = true; setpointV = myData.chargeSetpointV; old_myData.chargeSetpointV = myData.chargeSetpointV;
         }
@@ -499,6 +519,21 @@ void slowUpdate() {
         gpsAlt = gpsData.altitudeM;
         xSemaphoreGive(dataMutex);
     }
+
+    // Fault banner (styling pass Phase 7): evaluated every tick,
+    // deliberately NOT folded into the early-return below - a CAN dropout
+    // is detected by time passing with no new frame, which wouldn't set
+    // any of the changed-flags this early-return checks. ui_fault_banner_
+    // update() does its own internal dirty-check, so this is cheap on the
+    // (overwhelmingly common) tick where nothing about the fault state
+    // actually changed.
+    bool canDropout = ui_can_freshness_hasEverReceived() && !ui_can_freshness_isLive();
+    bool overTemp = (curMotorTemp >= warningSet.motorTemp) || (curHeatsinkTemp >= warningSet.heatsinkTemp);
+    if (xSemaphoreTake(uiMutex, portMAX_DELAY) == pdTRUE) {
+        ui_fault_banner_update(canDropout, overTemp, curLastErr);
+        xSemaphoreGive(uiMutex);
+    }
+
     bool deltaVChanged = vMaxChanged || vMinChanged;
     if (!(socChanged || motTChanged || hsTChanged || voltChanged || auxVChanged ||
           gearChanged || motModeChanged || regenChanged || vMaxChanged || vMinChanged || tMaxChanged ||
@@ -510,22 +545,34 @@ void slowUpdate() {
 
     if (xSemaphoreTake(uiMutex, portMAX_DELAY) == pdTRUE) {
         if (socChanged) {
-            bool warn = soc <= warningSet.lowSoc;
+            // Gate on CAN freshness, not just the raw threshold check -
+            // fixes a real bug (styling pass items 3-4, 2026-09-18):
+            // myData.soc is zero-initialized at boot, and 0 <= lowSoc
+            // (default 15) is true, so this label rendered in warning red
+            // before any real CAN frame ever arrived. A value that's
+            // never been reported isn't "critically low," it's simply
+            // unknown - ui_card_setValueNoData() below shows that
+            // honestly (dim gray) instead of either red or a confident-
+            // looking plain white "0".
+            bool noData = !ui_can_freshness_hasEverReceived();
+            bool warn = !noData && (soc <= warningSet.lowSoc);
             const char *battIcon = batteryIconForSoc(soc);
             if (ui_statusSocArc) lv_arc_set_value(ui_statusSocArc, soc);
             if (ui_statusSocValLabel) {
                 lv_label_set_text_fmt(ui_statusSocValLabel, "%d", soc);  // no "%" - see ui_statusScreen.c arc-containment comment
-                setWarnColor(ui_statusSocValLabel, warn);
+                if (noData) ui_card_setValueNoData(ui_statusSocValLabel, NULL, true);
+                else { ui_card_setValueNoData(ui_statusSocValLabel, NULL, false); setWarnColor(ui_statusSocValLabel, warn); }
             }
             if (ui_statusSocTitleLabel) lv_label_set_text_fmt(ui_statusSocTitleLabel, "%s SOC", battIcon);
             if (ui_batterySocArc) lv_arc_set_value(ui_batterySocArc, soc);
             if (ui_batterySocValLabel) {
                 lv_label_set_text_fmt(ui_batterySocValLabel, "%d", soc);  // no "%" - see ui_batteryScreen.c arc-containment comment
-                setWarnColor(ui_batterySocValLabel, warn);
+                if (noData) ui_card_setValueNoData(ui_batterySocValLabel, NULL, true);
+                else { ui_card_setValueNoData(ui_batterySocValLabel, NULL, false); setWarnColor(ui_batterySocValLabel, warn); }
             }
             if (ui_batterySocIconLabel) {
                 lv_label_set_text(ui_batterySocIconLabel, battIcon);
-                setWarnColor(ui_batterySocIconLabel, warn);
+                if (!noData) setWarnColor(ui_batterySocIconLabel, warn);
             }
             // Charging screen's SOC is a drawn battery shape, not an arc -
             // ui_chargingScreen_setSoc() handles the label text/color AND
@@ -555,11 +602,15 @@ void slowUpdate() {
             }
         }
         if (voltChanged) {
-            bool warn = volt <= warningSet.packVLow;
+            // Same no-data gate as SOC above, same bug (0 <= packVLow
+            // default 280.0 was true at boot before any real frame).
+            bool noData = !ui_can_freshness_hasEverReceived();
+            bool warn = !noData && (volt <= warningSet.packVLow);
             if (ui_statusPackVBar) lv_bar_set_value(ui_statusPackVBar, (int)volt, LV_ANIM_ON);
             if (ui_statusPackVValLabel) {
                 lv_label_set_text_fmt(ui_statusPackVValLabel, "%.1f V", volt);
-                setWarnColor(ui_statusPackVValLabel, warn);
+                if (noData) ui_card_setValueNoData(ui_statusPackVValLabel, NULL, true);
+                else { ui_card_setValueNoData(ui_statusPackVValLabel, NULL, false); setWarnColor(ui_statusPackVValLabel, warn); }
             }
         }
         if (auxVChanged) {
@@ -568,6 +619,15 @@ void slowUpdate() {
                 lv_label_set_text_fmt(ui_statusAuxVValLabel, "%.1f V", auxV);
                 setWarnColor(ui_statusAuxVValLabel, false);
             }
+            // Low-12V shutdown sequence (styling pass Phase 6, item 12-13) -
+            // driven off this same dirty-checked aux12V value, no separate
+            // polling path. Gated on real CAN data having arrived at least
+            // once - same false-positive-at-boot bug class as items 3-4
+            // (SOC/Pack Voltage): aux12vVoltage is zero-initialized, and
+            // 0.0 < 11.5 is true before any real frame, which would
+            // otherwise show the shutdown warning immediately at boot. See
+            // ui_shutdown.h for the full state machine.
+            if (ui_can_freshness_hasEverReceived()) ui_shutdown_notifyAux12V(auxV);
         }
         if (gearChanged) {
             if (ui_driveGearValLabel) lv_label_set_text(ui_driveGearValLabel, gearText(gear));
@@ -644,7 +704,19 @@ void slowUpdate() {
         if (acVChanged) {
             if (ui_chargingAcVBar) lv_bar_set_value(ui_chargingAcVBar, (int)acV, LV_ANIM_ON);
             if (ui_chargingAcVValLabel) {
-                lv_label_set_text_fmt(ui_chargingAcVValLabel, "%.0f", acV);
+                // Styling pass item 18: was "%.0f" - a voltage is a
+                // voltage regardless of screen, same 1-decimal precision
+                // as pack/aux voltage (ui_statusPackVValLabel/
+                // ui_statusAuxVValLabel above). Setpoint voltage and
+                // charger temp (just below) were also flagged for a unit-
+                // suffix change by the original audit, but both already
+                // have their own separate unit label via
+                // createValueAndUnit()'s unitText param ("V"/"\xC2\xB0C") -
+                // embedding the unit into the value text too would show it
+                // twice, not fix an inconsistency, so those two are left
+                // as-is; this field's actual issue (precision, not a
+                // missing unit) is the one real fix here.
+                lv_label_set_text_fmt(ui_chargingAcVValLabel, "%.1f", acV);
                 setWarnColor(ui_chargingAcVValLabel, false);
             }
         }
@@ -662,16 +734,12 @@ void slowUpdate() {
             ui_chargingScreen_setStatus(opmode, chgType, plugDet);  // no-op if the screen doesn't exist yet
         }
         if (gpsStatusChanged) {
-            if (ui_gpsStatusPill && ui_gpsStatusLabel) {
-                // LV_SYMBOL_GPS prefix only while a fix is actually held -
-                // design-review "icons" pass, 2026-09-14 (see
-                // waveshare-dash-build.md), same "only while active"
-                // reasoning as the Charging screen's charge-bolt icon.
-                if (gpsHasFix) lv_label_set_text(ui_gpsStatusLabel, LV_SYMBOL_GPS " GPS FIX");
-                else lv_label_set_text(ui_gpsStatusLabel, "NO FIX");
-                lv_obj_set_style_bg_color(ui_gpsStatusPill, gpsHasFix ? ui_theme_good() : ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-            }
-            if (ui_gpsSatsLabel) lv_label_set_text_fmt(ui_gpsSatsLabel, "Sats: %d", gpsSats);
+            // Styling pass: pill + sats label now go through
+            // ui_gpsScreen_setStatus() (ui_status_pill.h migration) instead
+            // of this file poking the pill/label directly - no-op if the
+            // screen doesn't exist yet, same convention as every other
+            // screen's own setter.
+            ui_gpsScreen_setStatus(gpsHasFix, gpsSats);
             if (ui_navStatusLabel) {
                 lv_label_set_text_fmt(ui_navStatusLabel, gpsHasFix ? LV_SYMBOL_GPS " FIX - %d sats" : "NO FIX", gpsSats);
             }
