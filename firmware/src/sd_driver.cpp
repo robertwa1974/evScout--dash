@@ -1,5 +1,12 @@
 #include "sd_driver.h"
 
+// Defined unconditionally (not inside the board #if below) so every
+// consumer (ui_splash_truck.cpp, lv_fs_sd.cpp) links against a real
+// mutex regardless of board - see sd_driver.h's comment on sdMutex for
+// why this exists. On the no-op board branch nothing ever actually
+// contends for it, which is harmless.
+SemaphoreHandle_t sdMutex = xSemaphoreCreateMutex();
+
 #if defined(WAVESHARE_S3_LCD7) || defined(WAVESHARE_S3_LCD5)
 
 #include "display_driver.h"

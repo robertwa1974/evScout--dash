@@ -26,6 +26,14 @@
 // sequence, it unwinds: backlight ramps back to whatever it was before the
 // warning started, the overlay hides, nothing about the underlying screen
 // was ever touched (it was never left).
+//
+// Manual override (2026-09-19): zombie_updaters.h's lowVoltageShutdownEnabled
+// (Settings screen toggle) can disable this whole sequence. Added because a
+// bench ZombieVerter with no U12V sensor wired legitimately returns a real,
+// valid ~0V SDO response on that channel - indistinguishable from a real
+// dying 12V battery at the protocol level, so no amount of CAN-data
+// filtering can tell them apart. Leave it on for any vehicle with a real
+// U12V sensor wired.
 
 #include <stdbool.h>
 

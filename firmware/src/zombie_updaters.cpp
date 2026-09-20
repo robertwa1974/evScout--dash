@@ -67,6 +67,16 @@ static void sendNextPollRequest() {
     pollCursor = (pollCursor + 1) % pollTableSize;
 }
 
+// Set only inside the PARAM_ID_U12V case below - i.e. only when the VCU has
+// actually returned a real (non-abort) SDO value for U12V at least once.
+// Needed because ui_can_freshness_hasEverReceived() is a single global
+// flag covering ANY successfully-decoded param, not this one specifically
+// - see the aux12V update site further down for why that distinction
+// matters (a ZombieVerter with no U12V measurement configured aborts every
+// read of this one param forever, while everything else on the bus
+// responds normally).
+static bool aux12vEverReceived = false;
+
 static void applySdoValue(uint16_t paramId, int32_t rawValue) {
     float value = sdoToFloat(rawValue);
     switch (paramId) {
@@ -79,7 +89,7 @@ static void applySdoValue(uint16_t paramId, int32_t rawValue) {
         case PARAM_ID_IDC:         myData.packCurrent   = value;       break;
         case PARAM_ID_TMPM:        myData.motorTemp     = (int)value; break;
         case PARAM_ID_TMPHS:       myData.heatsinkTemp  = (int)value; break;
-        case PARAM_ID_U12V:        myData.aux12vVoltage = value;       break;
+        case PARAM_ID_U12V:        myData.aux12vVoltage = value; aux12vEverReceived = true; break;
         case PARAM_ID_MOTOR_SPEED: myData.motorRpm      = (int)value; break;
         case PARAM_ID_GEAR:        myData.gear          = (int)value; break;
         case PARAM_ID_MOT_ACTIVE:  myData.motActive     = (int)value; break;
@@ -627,7 +637,18 @@ void slowUpdate() {
             // 0.0 < 11.5 is true before any real frame, which would
             // otherwise show the shutdown warning immediately at boot. See
             // ui_shutdown.h for the full state machine.
-            if (ui_can_freshness_hasEverReceived()) ui_shutdown_notifyAux12V(auxV);
+            //
+            // Also gated on aux12vEverReceived specifically (found on real
+            // hardware, 2026-09-19: a bench ZombieVerter with no U12V
+            // measurement configured aborts every SDO read of PARAM_ID_U12V
+            // forever, while every other param responds normally - so
+            // ui_can_freshness_hasEverReceived() alone goes true almost
+            // immediately, but aux12vVoltage never leaves its 0.0 default,
+            // permanently satisfying 0.0 < AUX12V_LOW_V and forcing the
+            // shutdown sequence on every bench run). Both flags must be true:
+            // the dash has heard from the VCU at all, AND U12V specifically
+            // has ever come back as a real reading - not an abort.
+            if (ui_can_freshness_hasEverReceived() && aux12vEverReceived) ui_shutdown_notifyAux12V(auxV);
         }
         if (gearChanged) {
             if (ui_driveGearValLabel) lv_label_set_text(ui_driveGearValLabel, gearText(gear));
@@ -798,12 +819,20 @@ void slowUpdate() {
 }
 
 // --- Settings persistence --------------------------------------------------
+bool lowVoltageShutdownEnabled = true;
+
 void getWarningsSet() {
     preferences.begin("warn", true);
     warningSet.lowSoc       = preferences.getInt("lowSoc", DEF_WARN_LOW_SOC);
     warningSet.motorTemp    = preferences.getInt("motorT", DEF_WARN_MOTOR_TEMP);
     warningSet.heatsinkTemp = preferences.getInt("hsT", DEF_WARN_HEATSINK_TEMP);
     warningSet.packVLow     = preferences.getFloat("packVLo", DEF_WARN_PACK_V_LOW);
+    // Same "warn" namespace, separate key - see zombie_updaters.h's comment
+    // on lowVoltageShutdownEnabled for why this exists and why it's read
+    // here (at boot, alongside the other warning settings) but written by
+    // its own setLowVoltageShutdownEnabled() below instead of
+    // updateWarningsSet() (applies+persists immediately, not Save-gated).
+    lowVoltageShutdownEnabled = preferences.getBool("lo12vEn", true);
     preferences.end();
 }
 
@@ -813,6 +842,13 @@ void updateWarningsSet() {
     preferences.putInt("motorT", warningSet.motorTemp);
     preferences.putInt("hsT", warningSet.heatsinkTemp);
     preferences.putFloat("packVLo", warningSet.packVLow);
+    preferences.end();
+}
+
+void setLowVoltageShutdownEnabled(bool enabled) {
+    lowVoltageShutdownEnabled = enabled;
+    preferences.begin("warn", false);
+    preferences.putBool("lo12vEn", enabled);
     preferences.end();
 }
 

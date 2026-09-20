@@ -133,6 +133,19 @@ extern struct_message myData;
 extern struct_message old_myData;
 extern warning_set warningSet;
 
+// Low-12V shutdown on/off (Settings screen, 2026-09-19) - defaults true.
+// Added because a bench ZombieVerter with no U12V sensor wired legitimately
+// reports ~0V on that channel (a valid SDO response, not an abort/no-data
+// condition - see ui_shutdown.h/.cpp), which is indistinguishable at the
+// protocol level from a real dying 12V battery. There is no way to tell
+// these apart from CAN data alone, so this is a manual override: turn it
+// off on hardware with no working U12V sensor, leave it on for any vehicle
+// that has one wired. Applies and persists immediately when changed (same
+// "no separate Save step" pattern as displayPref below), not gated behind
+// the Warning Thresholds section's Save button.
+extern bool lowVoltageShutdownEnabled;
+void setLowVoltageShutdownEnabled(bool enabled);
+
 // Bumped every time a screen is (re)created (see each ui_*Screen_screen_init()
 // - call ui_notify_screen_created() at the end of any screen that binds
 // myData to widgets). fastUpdate/midUpdate/slowUpdate each remember the last

@@ -5,6 +5,7 @@
 #include "imu_driver.h"
 #include "gps_driver.h"
 #include "sd_driver.h"
+#include "lv_fs_sd.h"
 
 // PlatformIO defines UNIT_TEST when building an on-device test (e.g.
 // test_nav_tile, which needs sd_driver.cpp/nav_reader.cpp linked in via
@@ -48,6 +49,9 @@ void setup(void) {
                       // must happen before ui_init() below so the very first
                       // screen is built with the right colors, no boot flash
   lv_init();
+  lv_fs_sd_register();  // "S:" drive - see lv_fs_sd.h. LVGL subsystem call, needs lv_init() done first;
+                         // sd_init() above doesn't need to have succeeded (the driver's ready_cb checks
+                         // sd_available() dynamically on every file open).
 
   // disp_draw_buf1 = (lv_color_t *)heap_caps_malloc(sizeof(lv_color_t) * LCD_WIDTH * LCD_HEIGHT / 10, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   // disp_draw_buf2 = (lv_color_t *)heap_caps_malloc(sizeof(lv_color_t) * LCD_WIDTH * LCD_HEIGHT / 10, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);

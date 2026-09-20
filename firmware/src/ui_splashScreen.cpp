@@ -42,7 +42,24 @@
 //      (so a dash with no CAN connected yet - bench testing, wiring in
 //      progress - doesn't hang here forever). Polled via a short-period
 //      lv_timer rather than computed as a single deadline, since the
-//      CAN-arrival condition can't be predicted in advance.
+//      CAN-arrival condition can't be predicted in advance. A looping
+//      truck-revolve animation (ui_splash_truck.h) replaces the logo/
+//      clock as this hold's visual, starting the instant the wipe
+//      finishes - deliberately NOT gated on preload having finished too
+//      (found on real hardware, 2026-09-19: a real SD preload takes
+//      ~11.75s for 22 frames, far longer than SPLASH_EXIT_TIMEOUT_MS, so
+//      gating on it meant the exit timeout always fired first and the
+//      truck never appeared at all). Preload itself still runs as a
+//      background task, started at the very top of screen_init() so it
+//      has as much of a head start as possible; playback just no longer
+//      waits for it to fully finish, relying instead on ui_splash_truck's
+//      existing per-frame SD-fallback path for whichever frames the
+//      background task hasn't reached yet - see that header for the
+//      asset pipeline/PSRAM-preload/SD-fallback story. The exit gate
+//      itself is NOT gated on the truck having started - real CAN data or
+//      the timeout can still end the hold even if preload is still
+//      running. splashDoExit() stops the loop immediately, whichever of
+//      the two gate conditions (or a tap-to-skip) fired.
 //   5. Exit transition is LV_SCR_LOAD_ANIM_FADE_ON, not a slide - the only
 //      screen transition in this codebase that isn't MOVE_LEFT/MOVE_RIGHT.
 //      Intentional: this is a boot sequence ending, not lateral navigation
@@ -88,6 +105,7 @@
 #include "img_scout_logo.h"
 #include "display_driver.h"
 #include "ui_can_freshness.h"
+#include "ui_splash_truck.h"
 
 #define SPLASH_WIPE_MS          900
 #define SPLASH_EXIT_POLL_MS      50
@@ -99,6 +117,16 @@ lv_obj_t * ui_splashLogo = NULL;
 lv_obj_t * ui_splashClockLabel = NULL;
 lv_obj_t * ui_splashClockCaptionLabel = NULL;
 static lv_obj_t * ui_splashWipeRect = NULL;
+// Truck-revolve lv_img - hidden until the wipe finishes, at which point
+// it replaces the clock/caption (hidden at that same moment - see
+// splashWipeReadyCb()) as this screen's hold-state visual. Native
+// UI_SPLASH_TRUCK_FRAME_SIZE (320x320) - no zoom needed: the source
+// frames are landscape content letterboxed onto a black square (see
+// convert_splash_frames.py), so roughly the top/bottom ~20% of every
+// frame is already pure black and blends into this screen's own black
+// background with no visible seam, regardless of exactly where this
+// lands vertically.
+static lv_obj_t * ui_splashTruckImg = NULL;
 
 // Wipe-rect geometry, captured once at creation (see this file's header
 // comment) - referenced by splashWipeAnimExec() below, which can't close
@@ -107,6 +135,7 @@ static lv_coord_t splashWipeBaseX = 0;
 static lv_coord_t splashWipeBaseW = 0;
 
 static bool     splashWipeDone = false;
+static bool     splashTruckStarted = false;
 static bool     splashExiting = false;
 static uint32_t splashExitStartTick = 0;
 static lv_timer_t * splashExitTimer = NULL;
@@ -120,6 +149,53 @@ static void splashWipeAnimExec(void * obj, int32_t v) {
 static void splashWipeReadyCb(lv_anim_t * a) {
     LV_UNUSED(a);
     splashWipeDone = true;
+    // Does NOT start the truck loop directly - preload runs on its own
+    // background task now (see ui_splash_truck.h) and may still be
+    // running when the wipe finishes first. splashExitPollCb() below
+    // starts it the moment BOTH conditions are true, whichever finishes
+    // second, so the wipe is never held up waiting for preload.
+}
+
+// Reveals + starts the truck-revolve loop, replacing the logo/clock/
+// caption as this screen's hold-state visual - called once, the instant
+// the wipe animation finishes. Deliberately does NOT wait for
+// ui_splash_truck_isPreloadDone() (found on real hardware, 2026-09-19):
+// a real SD preload takes ~11.75s for all 22 frames, but
+// SPLASH_EXIT_TIMEOUT_MS is 3000ms - the exit gate was firing and
+// switching to the Speed screen every single time, long before preload
+// could ever finish, so the truck never got a chance to display at all
+// (boots clean, just no visible truck - not a crash). The gate's timeout
+// itself must not change (see this file's header comment), so instead
+// this now starts playback immediately and leans on the per-frame SD
+// fallback that already existed in ui_splash_truck.h's timer callback
+// for PSRAM-allocation failures: frameInPsram[] is a zero-initialized
+// static array, so a frame the background preload task hasn't reached
+// yet reads as "not ready" and is fetched directly from SD for that one
+// draw, exactly the same path a genuine allocation failure already took.
+// As preload progresses in the background, more frames flip to the fast
+// PSRAM path automatically - no separate transition logic needed.
+//
+// The logo specifically has to be hidden here (found on real hardware,
+// 2026-09-19): the truck image's on-screen position overlaps the logo's
+// own, and simply drawing the truck ON TOP was never enough - the logo
+// was still visible showing through/behind it, since the truck frames'
+// letterboxed black margins aren't perfectly opaque-black-on-black
+// against every part of the logo (the logo itself isn't at pure y=0
+// luminance everywhere). Hiding it outright is simpler and correct
+// either way.
+static void startTruckIfReady(void) {
+    if (splashTruckStarted) return;
+    if (!splashWipeDone) return;
+    splashTruckStarted = true;
+
+    if (ui_splashLogo) lv_obj_add_flag(ui_splashLogo, LV_OBJ_FLAG_HIDDEN);
+    if (ui_splashWipeRect) lv_obj_add_flag(ui_splashWipeRect, LV_OBJ_FLAG_HIDDEN);
+    if (ui_splashClockLabel) lv_obj_add_flag(ui_splashClockLabel, LV_OBJ_FLAG_HIDDEN);
+    if (ui_splashClockCaptionLabel) lv_obj_add_flag(ui_splashClockCaptionLabel, LV_OBJ_FLAG_HIDDEN);
+    if (ui_splashTruckImg) {
+        lv_obj_clear_flag(ui_splashTruckImg, LV_OBJ_FLAG_HIDDEN);
+        ui_splash_truck_start(ui_splashTruckImg);
+    }
 }
 
 // Single exit path, shared by the CAN/timeout gate and the tap-to-skip
@@ -128,6 +204,10 @@ static void splashWipeReadyCb(lv_anim_t * a) {
 static void splashDoExit(void) {
     if (splashExiting) return;
     splashExiting = true;
+    // Stopped unconditionally, before the early-return below - whichever
+    // path got here (CAN arrival, timeout, or tap-to-skip - see items
+    // 12-13), the loop must not keep animating into the crossfade.
+    ui_splash_truck_stop();
     if (splashExitTimer) {
         lv_timer_del(splashExitTimer);
         splashExitTimer = NULL;
@@ -140,8 +220,14 @@ static void splashDoExit(void) {
 static void splashExitPollCb(lv_timer_t * timer) {
     LV_UNUSED(timer);
     if (!splashWipeDone) return;  // let the wipe finish before either exit condition can fire
+    startTruckIfReady();
     bool haveData = ui_can_freshness_hasEverReceived();
     bool timedOut = (lv_tick_elaps(splashExitStartTick) >= SPLASH_EXIT_TIMEOUT_MS);
+    // Deliberately NOT gated on splashTruckStarted - real CAN data (or the
+    // timeout) must still be able to end the hold even if preload is
+    // somehow still running (a slow/failing SD card, say). The truck
+    // getting a chance to display is a nice-to-have, not something the
+    // boot sequence can be held hostage by - see ui_splash_truck.h.
     if (haveData || timedOut) splashDoExit();
 }
 
@@ -156,6 +242,7 @@ void ui_event_splashScreen(lv_event_t * e)
 
     if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_LEFT) {
         lv_indev_wait_release(lv_indev_get_act());
+        ui_splash_truck_stop();  // same reasoning as splashDoExit() - don't leave it running in the background
         if (splashExitTimer) {
             lv_timer_del(splashExitTimer);
             splashExitTimer = NULL;
@@ -167,6 +254,12 @@ void ui_event_splashScreen(lv_event_t * e)
 
 void ui_splashScreen_screen_init(void)
 {
+    // As early as possible - before any visual element is created, per
+    // ui_splash_truck.h's own call-site guidance - so every frame is
+    // sitting in PSRAM well before the wipe-reveal finishes and the loop
+    // is asked to start.
+    ui_splash_truck_preload();
+
     ui_splashScreen = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_splashScreen, LV_OBJ_FLAG_SCROLLABLE);
     // Hardcoded black, not ui_theme_bg() - see this file's header comment.
@@ -214,12 +307,25 @@ void ui_splashScreen_screen_init(void)
     lv_obj_set_style_text_color(ui_splashClockCaptionLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_splashClockCaptionLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
+    // Truck-revolve hold-state visual - hidden until startTruckIfReady()
+    // reveals + starts it (once both the wipe and the background preload
+    // have finished). Native 320x320 (see the global declaration's
+    // comment for why no zoom is needed). Its vertical position overlaps
+    // the logo's own - that's fine, since startTruckIfReady() explicitly
+    // hides the logo before revealing this rather than relying on the
+    // two never visually touching (found on real hardware: they DO
+    // visually clash if both are left showing at once).
+    ui_splashTruckImg = lv_img_create(ui_splashScreen);
+    lv_obj_set_pos(ui_splashTruckImg, (800 - UI_SPLASH_TRUCK_FRAME_SIZE) / 2, 150);
+    lv_obj_add_flag(ui_splashTruckImg, LV_OBJ_FLAG_HIDDEN);
+
     lv_obj_add_event_cb(ui_splashScreen, ui_event_splashScreen, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui_splashScreen, splashTapCb, LV_EVENT_CLICKED, NULL);
 
     // Boot sequence: wipe + backlight ramp start together, exit gate waits
     // for the wipe (splashWipeReadyCb) then polls CAN-freshness/timeout.
     splashWipeDone = false;
+    splashTruckStarted = false;
     splashExiting = false;
     splashExitStartTick = lv_tick_get();
 
@@ -251,6 +357,7 @@ void ui_splashScreen_refresh_theme(void)
 
 void ui_splashScreen_screen_destroy(void)
 {
+    ui_splash_truck_stop();
     if (ui_splashScreen) lv_obj_del(ui_splashScreen);
 
     ui_splashScreen = NULL;
@@ -258,10 +365,12 @@ void ui_splashScreen_screen_destroy(void)
     ui_splashWipeRect = NULL;
     ui_splashClockLabel = NULL;
     ui_splashClockCaptionLabel = NULL;
+    ui_splashTruckImg = NULL;
     if (splashExitTimer) {
         lv_timer_del(splashExitTimer);
         splashExitTimer = NULL;
     }
     splashWipeDone = false;
+    splashTruckStarted = false;
     splashExiting = false;
 }

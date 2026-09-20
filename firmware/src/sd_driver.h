@@ -1,6 +1,8 @@
 #pragma once
 
 #include <stdbool.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // microSD card driver (2026-09-14, bring-up for the eventual offline map-
 // tile screen - see ui_navScreen.h / waveshare-dash-build.md for why a
@@ -8,6 +10,18 @@
 // driver existing). Deliberately scoped to mount + basic file I/O only -
 // no tile format or reading code yet, that's a follow-up once real map
 // tiles exist to test against.
+//
+// Known SD card directory conventions in this project (each documented in
+// full where it's actually consumed, this is just an index so they're not
+// scattered with no way to find them from here):
+//   /maps/Z{zoom}_r{row}_c{col}.nav  - NAV vector map tiles, see
+//                                      nav_tile_format.h / CLAUDE.md's
+//                                      "Map tile format" section.
+//   /splash_frames/frame_00.bin..    - splash-screen truck-revolve
+//                                      animation frames (LVGL raw
+//                                      RGB565), see ui_splash_truck.h and
+//                                      firmware/assets/
+//                                      convert_splash_frames.py.
 //
 // Pin assignments confirmed against Waveshare's own official example
 // (github.com/waveshareteam/ESP32-S3-Touch-LCD-7, examples/Arduino/
@@ -34,6 +48,26 @@
 // SD/SPI are both bundled with the arduino-esp32 core (no platformio.ini
 // lib_deps entry needed - same as Preferences/WiFi elsewhere in this
 // project).
+
+// Guards every actual SD.open()/File::read()/seek()/close() call, wherever
+// it happens - the truck-revolve splash animation (2026-09-19) introduced
+// the first case of two different FreeRTOS tasks touching the card at
+// once: ui_splash_truck.cpp's background preload task, and lv_fs_sd.cpp's
+// registered LVGL fs driver (called from whichever task is running the
+// LVGL timer when a frame falls back to an on-demand SD read - see
+// ui_splash_truck.h). SD_CS is asserted once and left permanently low
+// (see this header's own comment below), so unlike a normal SPI device
+// there's no way to even electrically arbitrate between two callers - the
+// SD card protocol's own multi-step command/response/data sequences must
+// never be allowed to interleave between two tasks, which the ESP-IDF SPI
+// driver's own per-transaction locking does NOT protect against (it only
+// keeps individual transactions from tearing, not multi-transaction
+// logical operations like a single File::read() call). Every SD-touching
+// call site takes this before the operation and gives it back
+// immediately after - callers should treat any single open/seek/read/
+// close call as its own critical section, not something to hold the
+// mutex across for longer than one such call.
+extern SemaphoreHandle_t sdMutex;
 
 #ifdef __cplusplus
 extern "C" {

@@ -2,6 +2,7 @@
 #include "ui_shutdown.h"
 #include "ui.h"
 #include "display_driver.h"
+#include "zombie_updaters.h"  // lowVoltageShutdownEnabled - see its own comment for why this exists
 
 #define AUX12V_LOW_V       11.5f  // confirmed trip point
 #define AUX12V_RECOVER_V   12.0f  // real hysteresis gap above the trip point - avoids flicker right at 11.5V
@@ -15,6 +16,11 @@ typedef enum {
     SHUTDOWN_OFF,       // backlight at 0, curtain fully opaque - screen is physically dark
 } shutdown_state_t;
 
+// Forward declaration - defined after recover() further down (needs it),
+// but buildOverlay() (right below) needs to wire it up before that point
+// in the file.
+static void overlayTapCb(lv_event_t *e);
+
 static shutdown_state_t state = SHUTDOWN_IDLE;
 static lv_obj_t * overlay = NULL;          // root container, parented to lv_layer_top()
 static lv_obj_t * warningIconLabel = NULL;
@@ -26,7 +32,14 @@ static int savedBrightness = 0;             // brightnessVal captured at WARNING
 
 static void buildOverlay(void) {
     overlay = lv_obj_create(lv_layer_top());
-    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    // CLICKABLE - unlike most overlays in this codebase - so tapping it
+    // can dismiss the sequence (see overlayTapCb() below and this file's
+    // header comment on why: a VCU with no U12V sensor can trip this the
+    // instant CAN connects, before the Settings toggle
+    // (lowVoltageShutdownEnabled) is reachable through an opaque
+    // full-screen overlay that's about to kill the backlight anyway).
+    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(overlay, overlayTapCb, LV_EVENT_CLICKED, NULL);
     lv_obj_set_size(overlay, 800, 480);
     lv_obj_set_pos(overlay, 0, 0);
     lv_obj_set_style_radius(overlay, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -60,6 +73,16 @@ static void buildOverlay(void) {
     lv_label_set_text(warningVoltLabel, "-- V - display shutting down");
     lv_obj_set_style_text_color(warningVoltLabel, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(warningVoltLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    // Makes the tap-to-dismiss added above actually discoverable - without
+    // this, a real dying-battery warning and a no-sensor-wired false
+    // positive look identical, and there's no visible hint that tapping
+    // does anything at all.
+    lv_obj_t *dismissHintLabel = lv_label_create(overlay);
+    lv_obj_align(dismissHintLabel, LV_ALIGN_CENTER, 0, 90);
+    lv_label_set_text(dismissHintLabel, "Tap to dismiss and disable (Settings to re-enable)");
+    lv_obj_set_style_text_color(dismissHintLabel, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(dismissHintLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // Separate object, not just the overlay's own bg_opa - stacked ON TOP
     // (created after, so it draws over the warning content), initially
@@ -127,8 +150,35 @@ static void recover(void) {
     backlight_rampTo(savedBrightness, SHUTDOWN_FADE_MS);
 }
 
+static void overlayTapCb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    // Tap-to-disable (2026-09-19): see buildOverlay()'s comment on why
+    // this overlay is clickable at all - a VCU with no U12V sensor wired
+    // can trip this the instant CAN connects, before the Settings screen
+    // (where lowVoltageShutdownEnabled normally gets turned off) is ever
+    // reachable through an opaque full-screen overlay that's about to
+    // kill the backlight. Disables the same way the Settings toggle does
+    // (persists immediately, so it stays off across reboots too) AND
+    // dismisses this instance right away, rather than only taking effect
+    // on some future visit to Settings that this exact bug prevents.
+    setLowVoltageShutdownEnabled(false);
+    recover();
+}
+
 void ui_shutdown_notifyAux12V(float auxV) {
     if (overlay == NULL) buildOverlay();
+
+    // Manual override (Settings screen, 2026-09-19) - see
+    // zombie_updaters.h's comment on lowVoltageShutdownEnabled: a real 0V-
+    // ish U12V reading from a VCU with no sensor wired is indistinguishable
+    // from a genuinely dying battery at the protocol level, so this can't
+    // be fixed by better CAN-data filtering. If toggled off while a
+    // sequence is already active, recover immediately rather than leaving
+    // the dash mid-shutdown.
+    if (!lowVoltageShutdownEnabled) {
+        if (state != SHUTDOWN_IDLE) recover();
+        return;
+    }
 
     if (state == SHUTDOWN_IDLE) {
         if (auxV < AUX12V_LOW_V) enterWarning();

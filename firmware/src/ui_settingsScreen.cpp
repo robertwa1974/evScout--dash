@@ -47,6 +47,11 @@ static lv_obj_t * saveBtn = NULL;
 static lv_obj_t * saveBtnLabel = NULL;
 static bool settingsDirty = false;
 
+// Applies + persists immediately, like Day/Night below - NOT gated behind
+// the Save button above (see zombie_updaters.h's comment on
+// lowVoltageShutdownEnabled for why this setting exists).
+static lv_obj_t * lowVoltShutdownSwitch = NULL;
+
 static lv_obj_t * autoBtn = NULL;
 static lv_obj_t * dayBtn = NULL;
 static lv_obj_t * nightBtn = NULL;
@@ -197,6 +202,12 @@ static void saveBtnCb(lv_event_t *e) {
     lv_obj_center(mbox);
 }
 
+static void lowVoltShutdownSwitchCb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    bool enabled = lv_obj_has_state(lowVoltShutdownSwitch, LV_STATE_CHECKED);
+    setLowVoltageShutdownEnabled(enabled);  // applies + persists immediately, no Save step
+}
+
 static void defaultBtnCb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
 
@@ -290,6 +301,25 @@ void ui_settingsScreen_screen_init(void)
     wireThresholdRow(motorTSpinbox);
     wireThresholdRow(heatsinkTSpinbox);
     wireThresholdRow(packVSpinbox);
+
+    // Applies + persists immediately (like Day/Night below), not part of
+    // the numeric-threshold Save flow above it - see zombie_updaters.h's
+    // comment on lowVoltageShutdownEnabled for why this exists: a bench
+    // ZombieVerter with no U12V sensor wired legitimately reports ~0V,
+    // indistinguishable from a real dying battery, so this is a manual
+    // override rather than something CAN data alone can resolve.
+    lv_obj_t *lowVoltRow = lv_menu_cont_create(thSection);
+    lv_obj_set_height(lowVoltRow, ROW_HEIGHT);
+    lv_obj_t *lowVoltLabel = lv_label_create(lowVoltRow);
+    lv_label_set_text(lowVoltLabel, "Low 12V Shutdown");
+    lv_obj_set_style_text_color(lowVoltLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(lowVoltLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_flex_grow(lowVoltLabel, 1);
+    lowVoltShutdownSwitch = lv_switch_create(lowVoltRow);
+    lv_obj_set_size(lowVoltShutdownSwitch, 70, 40);
+    if (lowVoltageShutdownEnabled) lv_obj_add_state(lowVoltShutdownSwitch, LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(lowVoltShutdownSwitch, ui_theme_accent(), LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_add_event_cb(lowVoltShutdownSwitch, lowVoltShutdownSwitchCb, LV_EVENT_VALUE_CHANGED, NULL);
 
     lv_obj_t *saveRow = lv_menu_cont_create(thSection);
     lv_obj_set_height(saveRow, ROW_HEIGHT);
@@ -426,6 +456,9 @@ void ui_settingsScreen_refresh_theme(void)
         lv_obj_set_style_bg_color(brightnessSlider, ui_theme_accent(), LV_PART_INDICATOR | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(brightnessSlider, ui_theme_accent(), LV_PART_KNOB | LV_STATE_DEFAULT);
     }
+    if (lowVoltShutdownSwitch) {
+        lv_obj_set_style_bg_color(lowVoltShutdownSwitch, ui_theme_accent(), LV_PART_INDICATOR | LV_STATE_CHECKED);
+    }
     ui_dock_refresh_theme(ui_settingsScreenDock, UI_DOCK_SETTINGS);
     // Section header labels, row title labels, and the +/-/default/cal
     // button chrome are left as their creation-time colors here - this
@@ -452,5 +485,6 @@ void ui_settingsScreen_screen_destroy(void)
     dayBtn = NULL;
     nightBtn = NULL;
     brightnessSlider = NULL;
+    lowVoltShutdownSwitch = NULL;
     ui_settingsScreenDock = NULL;
 }
