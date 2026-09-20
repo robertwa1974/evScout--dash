@@ -35,31 +35,42 @@
 //   3. Backlight ramps from whatever duty it was left at up to full (255)
 //      over the same ~900ms window (backlight_rampTo(), display_driver.h)
 //      - so the screen visibly brightens as the logo reveals, not before.
-//   4. Exit gate: waits for the wipe to finish, THEN exits on whichever
-//      comes first - the first real CAN frame (ui_can_freshness_
-//      hasEverReceived(), so the dash doesn't sit on a splash screen once
-//      the VCU is actually talking) or a SPLASH_EXIT_TIMEOUT_MS timeout
-//      (so a dash with no CAN connected yet - bench testing, wiring in
-//      progress - doesn't hang here forever). Polled via a short-period
-//      lv_timer rather than computed as a single deadline, since the
-//      CAN-arrival condition can't be predicted in advance. A looping
-//      truck-revolve animation (ui_splash_truck.h) replaces the logo/
-//      clock as this hold's visual, starting the instant the wipe
-//      finishes - deliberately NOT gated on preload having finished too
-//      (found on real hardware, 2026-09-19: a real SD preload takes
-//      ~11.75s for 22 frames, far longer than SPLASH_EXIT_TIMEOUT_MS, so
-//      gating on it meant the exit timeout always fired first and the
-//      truck never appeared at all). Preload itself still runs as a
-//      background task, started at the very top of screen_init() so it
-//      has as much of a head start as possible; playback just no longer
-//      waits for it to fully finish, relying instead on ui_splash_truck's
-//      existing per-frame SD-fallback path for whichever frames the
-//      background task hasn't reached yet - see that header for the
-//      asset pipeline/PSRAM-preload/SD-fallback story. The exit gate
-//      itself is NOT gated on the truck having started - real CAN data or
-//      the timeout can still end the hold even if preload is still
-//      running. splashDoExit() stops the loop immediately, whichever of
-//      the two gate conditions (or a tap-to-skip) fired.
+//   4. Exit gate: waits for the wipe to finish, THEN exits once the truck
+//      has shown a full revolution (ui_splash_truck_hasCompletedOneLap())
+//      AND whichever comes first of the first real CAN frame
+//      (ui_can_freshness_hasEverReceived(), so the dash doesn't sit on a
+//      splash screen once the VCU is actually talking) or a
+//      SPLASH_EXIT_TIMEOUT_MS timeout (so a dash with no CAN connected yet
+//      - bench testing, wiring in progress - doesn't hang here forever).
+//      SPLASH_TRUCK_MAX_WAIT_MS is a separate, much longer hard ceiling
+//      that bypasses the one-lap requirement entirely - the escape hatch
+//      for a missing/failing SD card, where a lap can never complete (see
+//      that constant's own comment). Polled via a short-period lv_timer
+//      rather than computed as a single deadline, since the CAN-arrival
+//      condition can't be predicted in advance. A looping truck-revolve
+//      animation (ui_splash_truck.h) replaces the logo/clock as this
+//      hold's visual, starting the instant the wipe finishes -
+//      deliberately NOT gated on preload having finished too (found on
+//      real hardware, 2026-09-19: a real SD preload takes many seconds,
+//      far longer than SPLASH_EXIT_TIMEOUT_MS, so gating on it meant the
+//      exit timeout always fired first and the truck never appeared at
+//      all). Preload itself still runs as a background task, started at
+//      the very top of screen_init() so it has as much of a head start as
+//      possible; playback just no longer waits for it to fully finish,
+//      relying instead on ui_splash_truck's own per-frame SD-fallback
+//      path for whichever frames the background task hasn't reached (or,
+//      at this frame size, will never reach - not every frame fits in
+//      PSRAM, see ui_splash_truck.h) - see that header for the full
+//      asset pipeline/PSRAM-preload/SD-fallback story. The one-lap
+//      requirement was added 2026-09-19 after real hardware showed the
+//      truck only getting through a handful of frames before real CAN
+//      data (arriving almost immediately once the VCU is powered) ended
+//      the hold - boot time is no longer a design constraint here (the
+//      original "never hold the boot hostage" intent still holds, just
+//      bounded by SPLASH_TRUCK_MAX_WAIT_MS instead of
+//      SPLASH_EXIT_TIMEOUT_MS once the truck has started). splashDoExit()
+//      stops the loop immediately, whichever gate condition (or a
+//      tap-to-skip) fired.
 //   5. Exit transition is LV_SCR_LOAD_ANIM_FADE_ON, not a slide - the only
 //      screen transition in this codebase that isn't MOVE_LEFT/MOVE_RIGHT.
 //      Intentional: this is a boot sequence ending, not lateral navigation
@@ -111,6 +122,25 @@
 #define SPLASH_EXIT_POLL_MS      50
 #define SPLASH_EXIT_TIMEOUT_MS 3000
 #define SPLASH_BACKLIGHT_TARGET 255
+// Hard ceiling (2026-09-19, "make it revolve a full 360") - see
+// splashExitPollCb()'s comment: the exit gate now waits for the truck to
+// complete one full lap (ui_splash_truck_hasCompletedOneLap()) before it's
+// allowed to act on CAN arrival or SPLASH_EXIT_TIMEOUT_MS, so a real
+// vehicle's near-instant CAN response no longer cuts the animation short.
+// This is the safety net for the one case that guarantee can't cover: no
+// SD card / a failing card, where the truck can never draw anything and a
+// lap can never complete - without this, the dash would sit on the splash
+// screen forever. Set generously above the worst-case real-hardware full-
+// preload time (well under 10s at the current UI_SPLASH_TRUCK_FRAME_SIZE,
+// see that constant's comment) so this never fires under normal
+// operation - it's purely a missing/failing-SD-card safety net.
+#define SPLASH_TRUCK_MAX_WAIT_MS 45000
+// Truck is displayed at this size (fills the panel's full 480px height,
+// centered horizontally) regardless of the native frame size read from
+// SD - see the zoom math where ui_splashTruckImg is created for how a
+// smaller native source (UI_SPLASH_TRUCK_FRAME_SIZE, currently 240) gets
+// scaled up to this at render time instead of by reading bigger files.
+#define SPLASH_TRUCK_DISPLAY_SIZE 480
 
 lv_obj_t * ui_splashScreen = NULL;
 lv_obj_t * ui_splashLogo = NULL;
@@ -119,13 +149,16 @@ lv_obj_t * ui_splashClockCaptionLabel = NULL;
 static lv_obj_t * ui_splashWipeRect = NULL;
 // Truck-revolve lv_img - hidden until the wipe finishes, at which point
 // it replaces the clock/caption (hidden at that same moment - see
-// splashWipeReadyCb()) as this screen's hold-state visual. Native
-// UI_SPLASH_TRUCK_FRAME_SIZE (320x320) - no zoom needed: the source
-// frames are landscape content letterboxed onto a black square (see
-// convert_splash_frames.py), so roughly the top/bottom ~20% of every
-// frame is already pure black and blends into this screen's own black
-// background with no visible seam, regardless of exactly where this
-// lands vertically.
+// splashWipeReadyCb()) as this screen's hold-state visual. Displayed at
+// SPLASH_TRUCK_DISPLAY_SIZE (480 - the largest square that fits this
+// 800x480 panel's full height without vertical clipping or stretching a
+// square render into a wide rectangle), zoomed up from the smaller
+// UI_SPLASH_TRUCK_FRAME_SIZE native source read off SD (see
+// ui_splash_truck.h's comment on why native and display size are
+// deliberately different now - keeping the SD file small is what makes
+// loading fast, zoom is what makes it fill the screen anyway). Centered
+// horizontally (see screen_init() below), leaving black bars left/right
+// that blend into this screen's own black background.
 static lv_obj_t * ui_splashTruckImg = NULL;
 
 // Wipe-rect geometry, captured once at creation (see this file's header
@@ -219,16 +252,31 @@ static void splashDoExit(void) {
 
 static void splashExitPollCb(lv_timer_t * timer) {
     LV_UNUSED(timer);
-    if (!splashWipeDone) return;  // let the wipe finish before either exit condition can fire
+    if (!splashWipeDone) return;  // let the wipe finish before any exit condition can fire
     startTruckIfReady();
+
+    uint32_t elapsed = lv_tick_elaps(splashExitStartTick);
+
+    // Absolute safety net (SPLASH_TRUCK_MAX_WAIT_MS's own comment has the
+    // full story) - bypasses everything below, including the one-lap
+    // guarantee, for the one case that guarantee can't cover: no SD card,
+    // or a failing one, where the truck can never draw a single frame and
+    // a lap can never complete. Without this the dash would sit on the
+    // splash screen forever.
+    if (elapsed >= SPLASH_TRUCK_MAX_WAIT_MS) { splashDoExit(); return; }
+
     bool haveData = ui_can_freshness_hasEverReceived();
-    bool timedOut = (lv_tick_elaps(splashExitStartTick) >= SPLASH_EXIT_TIMEOUT_MS);
-    // Deliberately NOT gated on splashTruckStarted - real CAN data (or the
-    // timeout) must still be able to end the hold even if preload is
-    // somehow still running (a slow/failing SD card, say). The truck
-    // getting a chance to display is a nice-to-have, not something the
-    // boot sequence can be held hostage by - see ui_splash_truck.h.
-    if (haveData || timedOut) splashDoExit();
+    bool timedOut = (elapsed >= SPLASH_EXIT_TIMEOUT_MS);
+    // Guaranteed one full revolution (2026-09-19, "truck still does not
+    // revolve 360 degrees") - real CAN data was arriving fast enough on
+    // the bench that the truck only ever showed a handful of frames
+    // before this fired. CAN-arrival/timeout is still exactly what
+    // decides WHEN to leave (unchanged from the original design) - it
+    // just can't act until ui_splash_truck_hasCompletedOneLap() is true,
+    // i.e. every one of the 22 frames has been shown at least once.
+    if ((haveData || timedOut) && ui_splash_truck_hasCompletedOneLap()) {
+        splashDoExit();
+    }
 }
 
 static void splashTapCb(lv_event_t * e) {
@@ -309,14 +357,22 @@ void ui_splashScreen_screen_init(void)
 
     // Truck-revolve hold-state visual - hidden until startTruckIfReady()
     // reveals + starts it (once both the wipe and the background preload
-    // have finished). Native 320x320 (see the global declaration's
-    // comment for why no zoom is needed). Its vertical position overlaps
-    // the logo's own - that's fine, since startTruckIfReady() explicitly
-    // hides the logo before revealing this rather than relying on the
-    // two never visually touching (found on real hardware: they DO
-    // visually clash if both are left showing at once).
+    // have finished). Positioned/centered using its NATIVE
+    // UI_SPLASH_TRUCK_FRAME_SIZE, then zoomed up to SPLASH_TRUCK_DISPLAY_SIZE
+    // - centering by native size still lands the object's on-screen CENTER
+    // at (400, 240) regardless of that size (the centering formula's +size/2
+    // and -size/2 cancel out), and LVGL's zoom always scales around the
+    // image's own center (lv_img_set_src() resets pivot to w/2,h/2 on every
+    // call - confirmed in LVGL 8.4's lv_img.c), so the zoomed 480x480
+    // result ends up correctly centered without needing separate math for
+    // the two sizes. Its position overlaps the logo's own - that's fine,
+    // since startTruckIfReady() explicitly hides the logo before revealing
+    // this rather than relying on the two never visually touching (found
+    // on real hardware: they DO visually clash if both are left showing at
+    // once).
     ui_splashTruckImg = lv_img_create(ui_splashScreen);
-    lv_obj_set_pos(ui_splashTruckImg, (800 - UI_SPLASH_TRUCK_FRAME_SIZE) / 2, 150);
+    lv_obj_set_pos(ui_splashTruckImg, (800 - UI_SPLASH_TRUCK_FRAME_SIZE) / 2, (480 - UI_SPLASH_TRUCK_FRAME_SIZE) / 2);
+    lv_img_set_zoom(ui_splashTruckImg, (LV_IMG_ZOOM_NONE * SPLASH_TRUCK_DISPLAY_SIZE) / UI_SPLASH_TRUCK_FRAME_SIZE);
     lv_obj_add_flag(ui_splashTruckImg, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_add_event_cb(ui_splashScreen, ui_event_splashScreen, LV_EVENT_ALL, NULL);

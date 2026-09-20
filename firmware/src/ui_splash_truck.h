@@ -77,8 +77,18 @@ extern "C" {
 #endif
 
 #define UI_SPLASH_TRUCK_FRAME_COUNT 22
-// Must match convert_splash_frames.py's --size (default 320, also 320).
-#define UI_SPLASH_TRUCK_FRAME_SIZE  320
+// Must match convert_splash_frames.py's --size - this is the NATIVE/SOURCE
+// frame size read from SD, not the on-screen display size. Went
+// 320->480->240 across 2026-09-19's real-hardware bring-up: 480 (matching
+// the panel's full 480px height 1:1, no zoom) made each frame ~460KB,
+// slow enough (~1.15s/frame off SD) that boot felt very slow and choppy,
+// and 22 frames (~9.7MB) didn't all fit in this board's ~7.6MB
+// typically-free PSRAM either. 240 keeps every frame's SD-read cost low
+// (~115KB, ~0.3s) and the full 22-frame set comfortably inside PSRAM
+// (~2.4MB total) - see ui_splashScreen.cpp's SPLASH_TRUCK_DISPLAY_SIZE
+// for how this gets scaled back up to fill the screen via lv_img zoom
+// instead of by reading bigger native files.
+#define UI_SPLASH_TRUCK_FRAME_SIZE  240
 #define SPLASH_FRAMES_DIR "/splash_frames"
 
 // See this header's LOADING STRATEGY comment above. Safe to call even if
@@ -100,6 +110,22 @@ bool ui_splash_truck_isPreloadDone(void);
 // 22 frames at UI_SPLASH_TRUCK_FRAME_PERIOD_MS, wrapping from frame 21
 // back to frame 0 indefinitely. No-op if a loop is already running.
 void ui_splash_truck_start(lv_obj_t * imgObj);
+
+// True once every one of the 22 frames has been DISPLAYED at least once
+// since ui_splash_truck_start() was called (tracked by distinct frame
+// index actually drawn, not elapsed time - see truckTimerCb()'s comment
+// in ui_splash_truck.cpp for why: real SD read speed can still lag
+// FRAME_PERIOD_MS's nominal pacing on a given frame, so "one lap" has to
+// mean "all 22 shown," not "a fixed elapsed time"). Added 2026-09-19 so
+// ui_splashScreen.cpp's exit gate can guarantee the user actually sees a
+// full revolution before leaving the splash screen, even when real CAN
+// data arrives almost immediately (which would otherwise cut the
+// animation off after only a few frames - see that file's own comment on
+// this). Always false before ui_splash_truck_start() is called, and if
+// the SD card is missing entirely (nothing can ever be drawn), so
+// ui_splashScreen.cpp's exit gate ALSO keeps its own hard ceiling timeout
+// - this alone is not a substitute for that safety net.
+bool ui_splash_truck_hasCompletedOneLap(void);
 
 // Stops the loop immediately, mid-frame - does not wait for the current
 // revolution to finish. Call this from the exact same place the splash

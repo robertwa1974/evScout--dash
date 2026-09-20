@@ -5,14 +5,31 @@
 #include <esp_heap_caps.h>
 #include <Arduino.h>
 
-// 80ms period (12.5fps) - within the requested 12-15fps range. No integer
-// fps in that range divides 1000ms evenly (1000/12=83.3, 1000/13=76.9,
-// 1000/14=71.4, 1000/15=66.7), so a clean, round timer PERIOD was
-// prioritized over forcing an exact-integer fps. 22 frames * 80ms = a
-// 1.76s full revolution, which reads as a smooth, deliberate turntable
-// loop rather than a flicker - reasonable for a several-second hold, easy
-// to retune (one #define) once seen on real hardware.
-#define FRAME_PERIOD_MS 80
+// Originally 80ms (12.5fps, within the requested 12-15fps range) - bumped
+// to 400ms on real hardware (2026-09-19) after the 12.5fps pace was found
+// to look visibly broken, not just slow. Root cause: LVGL's built-in
+// TRUE_COLOR file decoder (used for the SD-fallback path, see
+// drawFrameViaSdFallback() below) streams pixel data row-by-row DURING
+// the draw call itself (lv_img_decoder_built_in_read_line() in LVGL's own
+// lv_img_decoder.c) - a slow SD read doesn't just delay when a frame
+// pops in, it's visibly drawn top-to-bottom in real time, which reads as
+// the image "stopping and rebuilding" mid-frame. At 80ms/frame, playback
+// demands a new frame ~4x faster than the background preload task (and a
+// solo fallback read) can supply one (~300-340ms/frame measured at
+// UI_SPLASH_TRUCK_FRAME_SIZE=240) - preload can never stay ahead of that
+// demand, so nearly every frame past the first handful loses the race and
+// hits the slow, visibly-streaming fallback path instead of an instant
+// PSRAM blit. 400ms keeps playback's demand roughly matched to what SD
+// can actually sustain, so preload usually wins the race and a frame is
+// already cached by the time it's needed - the fallback path still
+// exists for whichever frame(s) genuinely can't keep up (typically just
+// frame 0, before preload has had any time to run at all), but it's no
+// longer the common case. A full 22-frame lap now takes ~8.8s instead of
+// 1.76s - deliberately not "smooth 12.5fps" anymore, but this project's
+// SD throughput doesn't support that pace for a turntable-sized frame,
+// and a slower-but-correctly-drawn revolve reads far better than a fast
+// one that visibly tears on most frames.
+#define FRAME_PERIOD_MS 400
 #define FRAME_PIXEL_BYTES (UI_SPLASH_TRUCK_FRAME_SIZE * UI_SPLASH_TRUCK_FRAME_SIZE * 2)  // RGB565, 2 bytes/px
 
 // Logging gated the same way every other Serial diagnostic in this
@@ -38,11 +55,11 @@ static lv_img_dsc_t frames[UI_SPLASH_TRUCK_FRAME_COUNT];
 static bool frameInPsram[UI_SPLASH_TRUCK_FRAME_COUNT];
 static lv_obj_t * truckImgObj = NULL;
 static lv_timer_t * truckTimer = NULL;
-// Real elapsed time since ui_splash_truck_start(), not a per-tick counter -
-// see truckTimerCb()'s comment for why the displayed frame is derived from
-// this instead of simply advancing to "whatever's next ready" each tick.
-static uint32_t truckStartMs = 0;
-static int lastDrawnFrame = -1;
+// Tracks distinct frames actually drawn since start() - see
+// ui_splash_truck_hasCompletedOneLap()'s header comment for why this is
+// keyed on "which frames have been shown" rather than elapsed time.
+static bool frameEverShown[UI_SPLASH_TRUCK_FRAME_COUNT];
+static bool lapComplete = false;
 // Set once, as the very last step of preloadTaskFn() below, after every
 // frames[]/frameInPsram[] write has already happened - see ui_splash_
 // truck.h's "Thread-safety" comment for why a single volatile flag is
@@ -206,10 +223,13 @@ static void drawFrameFromPsram(int idx) {
 // SD fallback (item 9): LVGL's built-in decoder streams TRUE_COLOR pixel
 // data directly from the file via lv_fs_sd.h's registered "S:" driver
 // during the actual draw call - nothing read into RAM here,
-// lv_img_set_src() just points at the path. Real hardware measured this
-// at ~500ms for a 200KB frame (~400KB/s) - see ui_splash_truck_start()
-// and truckTimerCb() below for why this is now called deliberately only
-// once (the very first frame), never from the recurring timer tick.
+// lv_img_set_src() just points at the path. Real hardware measured SD
+// reads at ~400KB/s, so this blocks for roughly (frame size in bytes /
+// 400KB/s) - called both from ui_splash_truck_start() for the very first
+// frame, and from truckTimerCb() below for any later frame the
+// background preload task hasn't reached yet (see that function's own
+// comment for why blocking here, once per frame, is an accepted
+// tradeoff).
 static void drawFrameViaSdFallback(int idx) {
     char path[48];
     snprintf(path, sizeof(path), "S:" SPLASH_FRAMES_DIR "/frame_%02d.bin", idx);
@@ -217,52 +237,60 @@ static void drawFrameViaSdFallback(int idx) {
     TRUCK_LOG("[splash-truck] frame %d: SD fallback (on-demand read) - watch for stutter\n", idx);
 }
 
+static int currentFrame = 0;
+
+static void markShown(int idx) {
+    frameEverShown[idx] = true;
+    if (lapComplete) return;
+    for (int i = 0; i < UI_SPLASH_TRUCK_FRAME_COUNT; i++) {
+        if (!frameEverShown[i]) return;
+    }
+    lapComplete = true;
+    TRUCK_LOG("[splash-truck] one full lap complete - all %d frames shown at least once\n", UI_SPLASH_TRUCK_FRAME_COUNT);
+}
+
+// Sequential stepper, not elapsed-time-paced (2026-09-19, second revision -
+// see git history for the elapsed-time version this replaced, and for the
+// even-larger 480px native size this replaced too - see
+// UI_SPLASH_TRUCK_FRAME_SIZE's comment). At the current 240px native size
+// every one of the 22 frames fits comfortably in PSRAM, but this stepper
+// doesn't actually depend on that: it always shows the NEXT frame in
+// sequence, from PSRAM if it's there (fast) or via a blocking SD-fallback
+// read if not (slow, ~0.3s at this frame size). That makes it correct
+// even if PSRAM were ever tight again - a permanently-uncached frame
+// would just always take the fallback path once per lap rather than
+// hanging forever, unlike the earlier elapsed-time/hold-when-not-ready
+// design, which only ever allowed the SD fallback for frame 0 at start()
+// and would hold forever on any later frame that never got cached.
+// FRAME_PERIOD_MS is therefore only a MINIMUM tick period for
+// already-cached frames, not a real-time pacing guarantee.
 static void truckTimerCb(lv_timer_t * timer) {
     LV_UNUSED(timer);
     if (!truckImgObj) return;
 
-    // Hold-when-not-ready, not skip-ahead: the first version of this fix
-    // (2026-09-19) advanced to "whatever frame IS in PSRAM" every single
-    // 80ms tick regardless of how many frames actually existed yet - with
-    // only a handful preloaded, that cycled through just those few frames
-    // every tick, so a full "rotation" through e.g. 5 ready frames took
-    // 400ms instead of the intended 1.76s for all 22 - visibly wrong,
-    // reported on real hardware as "strange fast spinning." The actual
-    // requirement is that the ON-SCREEN frame always matches how much
-    // REAL TIME has elapsed (so the revolve never runs faster than
-    // designed), even when the SD card hasn't kept up - so the target
-    // frame index is computed from elapsed time, not from a per-tick
-    // counter. If that exact frame isn't in PSRAM yet, this simply holds
-    // whatever's already on screen and tries again next tick, rather than
-    // substituting some other (wrongly-timed) frame or blocking on a slow
-    // SD read - see this file's other header comment on why blocking here
-    // was already ruled out (serializes with preload's own ~500ms reads
-    // via sdMutex).
-    uint32_t elapsedMs = millis() - truckStartMs;
-    int targetFrame = (int)((elapsedMs / FRAME_PERIOD_MS) % UI_SPLASH_TRUCK_FRAME_COUNT);
-    if (targetFrame == lastDrawnFrame) return;  // already showing the time-correct frame
-    if (!frameInPsram[targetFrame]) return;      // not ready yet - hold, don't substitute or block
-
-    drawFrameFromPsram(targetFrame);
-    lastDrawnFrame = targetFrame;
+    int idx = currentFrame;
+    if (frameInPsram[idx]) {
+        drawFrameFromPsram(idx);
+    } else {
+        drawFrameViaSdFallback(idx);
+    }
+    markShown(idx);
+    currentFrame = (currentFrame + 1) % UI_SPLASH_TRUCK_FRAME_COUNT;
 }
 
 void ui_splash_truck_start(lv_obj_t * imgObj) {
     if (truckTimer) return;  // already running
 
     truckImgObj = imgObj;
-    truckStartMs = millis();
-    // One deliberate blocking SD-fallback call is still allowed HERE,
-    // and only here, so something real is on screen immediately instead
-    // of blank - see truckTimerCb()'s comment above for why every
-    // subsequent tick holds rather than blocking again.
-    if (frameInPsram[0]) {
-        drawFrameFromPsram(0);
-    } else {
-        drawFrameViaSdFallback(0);
-    }
-    lastDrawnFrame = 0;
+    currentFrame = 0;
+    for (int i = 0; i < UI_SPLASH_TRUCK_FRAME_COUNT; i++) frameEverShown[i] = false;
+    lapComplete = false;
+    truckTimerCb(NULL);  // show + mark frame 0 immediately, advances currentFrame to 1
     truckTimer = lv_timer_create(truckTimerCb, FRAME_PERIOD_MS, NULL);
+}
+
+bool ui_splash_truck_hasCompletedOneLap(void) {
+    return lapComplete;
 }
 
 void ui_splash_truck_stop(void) {

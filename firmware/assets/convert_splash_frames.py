@@ -28,10 +28,16 @@ Each source frame is downscaled (preserving aspect ratio - these are
 ~16:9-ish renders, not square) to fit within a --size x --size square,
 then centered on a solid black canvas. No alpha/transparency is written -
 confirmed against the actual source PNGs before writing this (every
-sampled frame's alpha channel is a flat 255, and the corners are already
-near-black from the turntable's own dark stage/background) - so the
-output is plain LV_IMG_CF_TRUE_COLOR, 2 bytes/pixel, not
-TRUE_COLOR_ALPHA's 3.
+sampled frame's alpha channel is a flat 255) - so the output is plain
+LV_IMG_CF_TRUE_COLOR, 2 bytes/pixel, not TRUE_COLOR_ALPHA's 3.
+
+The source PNGs' own studio floor/backdrop is near-black but not truly
+(0,0,0) - a subtle dark-grey vignette (sampled 13-41 per channel at the
+corners/edges of the real source frames, 2026-09-20). That looked fine in
+a normal image viewer but showed up as an obvious rectangle once actually
+displayed against this project's genuinely pure-black splash screen on
+real hardware - see crush_near_black() for the fix (flattens anything at
+or below --bg-threshold to true black before resizing).
 
 HEADER FORMAT (LVGL 8.4's lv_img_header_t, from lv_img_buf.h - verified
 directly against the vendored copy in this project's .pio/libdeps, not
@@ -108,10 +114,35 @@ def rgb565_bytes(im: Image.Image) -> bytes:
     return bytes(out)
 
 
-def resize_and_center(im: Image.Image, size: int) -> Image.Image:
+def crush_near_black(im: Image.Image, threshold: int) -> Image.Image:
+    """Flattens near-black pixels to pure (0,0,0). Added 2026-09-20: this
+    project's source PNGs' own studio floor/backdrop is a subtle dark-grey
+    vignette (sampled 13-41 per channel at the corners/edges of the real
+    source frames, not a flat color), not true black despite looking that
+    way in a normal image viewer - confirmed visually WRONG on real
+    hardware, where it showed up as an obvious rectangle against the
+    splash screen's genuinely pure-black (0,0,0) background. threshold=48
+    (the default - see --bg-threshold) clears that whole sampled range
+    with margin while staying well below the truck's own painted/chrome
+    surfaces, so only background gets crushed, not real content."""
+    px = im.load()
+    w, h = im.size
+    for y in range(h):
+        for x in range(w):
+            r, g, b = px[x, y]
+            if r <= threshold and g <= threshold and b <= threshold:
+                px[x, y] = (0, 0, 0)
+    return im
+
+
+def resize_and_center(im: Image.Image, size: int, bg_threshold: int) -> Image.Image:
     """Fit im within size x size (preserving aspect ratio), centered on a
-    solid black square canvas - never crops, may letterbox/pillarbox."""
+    solid black square canvas - never crops, may letterbox/pillarbox.
+    Crushes near-black background to pure black first (see
+    crush_near_black()) so the source's own dark backdrop blends into the
+    letterbox bars instead of showing up as a visible rectangle."""
     im = im.convert("RGB")
+    im = crush_near_black(im, bg_threshold)
     src_w, src_h = im.size
     scale = min(size / src_w, size / src_h)
     new_w = max(1, round(src_w * scale))
@@ -130,6 +161,10 @@ def main():
                      help="Where to write frame_00.bin.. (default: %(default)s)")
     ap.add_argument("--size", type=int, default=DEFAULT_SIZE,
                      help="Square canvas size in pixels (default: %(default)s)")
+    ap.add_argument("--bg-threshold", type=int, default=48,
+                     help="Per-channel brightness at/below which a pixel is treated as background "
+                          "and crushed to pure black (default: %(default)s) - see crush_near_black()'s "
+                          "docstring for why this exists")
     args = ap.parse_args()
 
     if not args.input_dir.is_dir():
@@ -149,7 +184,7 @@ def main():
     sizes = []
     for i, src_path in enumerate(sources):
         im = Image.open(src_path)
-        canvas = resize_and_center(im, args.size)
+        canvas = resize_and_center(im, args.size, args.bg_threshold)
         pixel_data = rgb565_bytes(canvas)
         header = pack_header(args.size, args.size)
 
