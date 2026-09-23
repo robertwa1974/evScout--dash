@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/rober/Documents/GitHub/tilegen-build/icenav-src/lib/utils/src/**)",
+      "Read(//c/Users/rober/Documents/GitHub/tilegen-build/icenav-src/lib/router/src/**)",
+      "Bash(where pio *)",
+      "Bash(where platformio *)",
+      "Read(//c/Users/rober/**)",
+      "Bash(python -m platformio --version)",
+      "Bash(py -m platformio --version)",
+      "Bash(\"/c/Users/rober/.platformio/penv/Scripts/platformio.exe\" run *)",
+      "Bash(powershell -NoProfile -Command 'Get-Process | Where-Object { $_.ProcessName -match '\\\\''python|esptool|platformio'\\\\'' } | Select-Object Id,ProcessName,StartTime')",
+      "Bash(\"/c/Users/rober/.platformio/penv/Scripts/platformio.exe\" device *)",
+      "Bash(echo \"started pid $!\")",
+      "Bash(sleep 15 && cat /tmp/upload_out.log)",
+      "Read(//tmp/**)",
+      "Bash(PYTHONIOENCODING=utf-8 \"/c/Users/rober/.platformio/penv/Scripts/platformio.exe\" run -e mock-gps -t upload --upload-port COM6)",
+      "Bash(find \"/c/Users/rober/Documents/GitHub/tilegen-build\" -maxdepth 3 -iname \"*.nav\" 2>/dev/null | head -20 *)",
+      "Read(//c/Users/rober/Documents/GitHub/tilegen-build/**)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Users/rober/.platformio/penv/Scripts/platformio.exe run -e mock-gps)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Users/rober/.platformio/penv/Scripts/platformio.exe run -e mock-gps -t upload --upload-port COM6)",
+      "Bash(python3 -c \"import PIL; print\\(PIL.__version__\\)\")",
+      "Bash(xargs grep -l \"CORE_DEBUG_LEVEL\")",
+      "Bash(timeout 30 /c/Users/rober/.platformio/penv/Scripts/platformio.exe device monitor -e mock-gps --port COM6 --baud 115200)",
+      "Bash('C:\\\\Users\\\\rober/.platformio/penv/Scripts/platformio.exe' run *)",
+      "Bash(python3 -)",
+      "Bash(PYTHONIOENCODING=utf-8 nohup \"/c/Users/rober/.platformio/penv/Scripts/pio.exe\" run -e mock-gps)",
+      "Bash(echo \"build started, pid $!\")",
+      "Bash(PYTHONIOENCODING=utf-8 nohup \"/c/Users/rober/.platformio/penv/Scripts/pio.exe\" run -e mock-gps -t upload --upload-port COM6)",
+      "Bash(echo \"flash started, pid $!\")",
+      "Bash(rm -f /c/Users/rober/AppData/Local/Temp/claude/gps_crash_monitor.log)",
+      "Bash(PYTHONIOENCODING=utf-8 nohup \"/c/Users/rober/.platformio/penv/Scripts/pio.exe\" device monitor -p COM6 -b 115200 --filter esp32_exception_decoder)",
+      "Bash(echo \"monitor restarted, pid $!\")"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
+    ]
+  }
+}
