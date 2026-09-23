@@ -12,9 +12,10 @@
 // ui_statusScreen.c/ui_chargingScreen.c:
 //   (0,0) 8,8     GPS Status - pill: "GPS FIX"/"NO FIX" (from
 //                              gpsData.hasFix), secondary "Sats: N" label
-//   (1,0) 404,8   Speed      - km/h (GPS-derived - the speed cross-check
+//   (1,0) 404,8   Speed      - mph (GPS-derived - the speed cross-check
 //                              the architecture doc's dyno design calls
-//                              for), lv_bar
+//                              for; display-only kph->mph conversion, same
+//                              rule as the main Speed screen), lv_bar
 //   (0,1) 8,165   Latitude   - plain formatted value (decimal degrees +
 //                              N/S), no bar - a coordinate isn't a
 //                              meaningful quantity to show as a filled
@@ -137,10 +138,12 @@ void ui_gpsScreen_screen_init(void)
     lv_obj_set_style_text_color(ui_gpsSatsLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_gpsSatsLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // --- Speed: km/h (GPS-derived) ---
+    // --- Speed: mph (GPS-derived, display-only conversion from the
+    // underlying kph field - see zombie_updaters.cpp's gpsSpeedChanged
+    // block, same rule as the main Speed screen) ---
     ui_gpsSpeedPanel = ui_card_createPanel(ui_gpsScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP, ICON_SPEED " SPEED (GPS)", NULL);
-    ui_card_createValueAndUnit(ui_gpsSpeedPanel, &ui_gpsSpeedValLabel, NULL, "km/h");
-    ui_gpsSpeedBar = ui_card_createBar(ui_gpsSpeedPanel, false, 0, 200, 0);
+    ui_card_createValueAndUnit(ui_gpsSpeedPanel, &ui_gpsSpeedValLabel, NULL, "mph");
+    ui_gpsSpeedBar = ui_card_createBar(ui_gpsSpeedPanel, false, 0, 120, 0);
 
     // --- Latitude / Longitude ---
     ui_gpsLatPanel = ui_card_createPanel(ui_gpsScreen, GRID_GAP, GRID_GAP * 2 + GRID_PANEL_H, ICON_LOCATION_ON " LATITUDE", NULL);

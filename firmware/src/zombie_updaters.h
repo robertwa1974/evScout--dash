@@ -203,10 +203,29 @@ typedef enum {
 
 extern display_pref_t displayPref;
 
-// Loads displayPref + both per-mode brightness levels from NVS, resolves
-// Auto if needed, and applies via ui_theme_set()/ui_theme_load_brightness().
-// Called once at boot (firmware.ino setup(), before ui_init() creates any
-// screen) so the very first screen already renders correctly, no boot flash.
+// Manual UTC display offset in whole hours (e.g. -8 PST, -7 PDT) - see
+// zombie_updaters.cpp's definition comment for the full rationale. Display-
+// only: every consumer applies this at format time to a LOCAL COPY of the
+// hour, never to gpsData.hour itself, and resolveDisplayPref()'s sunrise/
+// sunset math deliberately does NOT go through this - it needs true UTC.
+extern int utcOffsetHours;
+
+// Re-renders the splash/GPS-NAV clock labels (and their captions) from the
+// current gpsData snapshot + utcOffsetHours, immediately. slowUpdate()'s own
+// dirty-check path calls this when GPS data changes; the Settings screen's
+// UTC-offset stepper also calls it directly so the clock previews the new
+// offset instantly instead of waiting for the next natural GPS-driven
+// update (which could be up to a minute away). Touches LVGL objects -
+// caller must already hold uiMutex (true for both slowUpdate() and any LVGL
+// button-event callback, since firmware.ino's loop() wraps
+// lv_timer_handler() in uiMutex).
+void refreshClockDisplay(void);
+
+// Loads displayPref + both per-mode brightness levels + utcOffsetHours from
+// NVS, resolves Auto if needed, and applies via
+// ui_theme_set()/ui_theme_load_brightness(). Called once at boot
+// (firmware.ino setup(), before ui_init() creates any screen) so the very
+// first screen already renders correctly, no boot flash.
 void getDisplayMode();
 
 // Re-resolves displayPref (a no-op unless it's AUTO) and re-applies via
@@ -214,7 +233,9 @@ void getDisplayMode();
 // hook a future periodic "check the light sensor" task would call.
 void applyDisplayMode();
 
-// Persists the current displayPref + both per-mode brightness levels to NVS.
-// Call right after applyDisplayMode()/ui_theme_set_brightness() - see the
-// settings screen's day/night buttons and brightness slider for the pattern.
+// Persists the current displayPref + both per-mode brightness levels +
+// utcOffsetHours to NVS. Call right after applyDisplayMode()/
+// ui_theme_set_brightness()/changing utcOffsetHours - see the settings
+// screen's day/night buttons, brightness slider, and UTC offset stepper for
+// the pattern.
 void updateDisplayMode();

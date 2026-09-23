@@ -6,6 +6,9 @@
 #include "gps_driver.h"
 #include "sd_driver.h"
 #include "lv_fs_sd.h"
+#include "charging_stations.h"
+#include "vehicle_config.h"
+#include "wifi_config_server.h"
 
 // PlatformIO defines UNIT_TEST when building an on-device test (e.g.
 // test_nav_tile, which needs sd_driver.cpp/nav_reader.cpp linked in via
@@ -44,6 +47,14 @@ void setup(void) {
 #if defined(DEBUG) || defined(CAN_TRACE)
   Serial.println(sdOk ? "SD card mounted" : "SD card not mounted (no card, or mount failed)");
 #endif
+  charging_stations_load();  // Destinations screen's "Nearest Charging
+                              // Station" row - false is fine, just means
+                              // stations.bin hasn't been generated/copied
+                              // yet (see charging_stations.h)
+  getVehicleConfig();  // dyno/Home/Work constants from NVS (vehicle_config.h) -
+                        // must happen before any screen reading them is built
+  wifi_config_server_init();  // loads the saved on/off pref and starts the AP
+                               // if it was left on (see wifi_config_server.h)
   ui_theme_init();   // default (day) palette state
   getDisplayMode();  // load saved night/day pref from NVS, apply via ui_theme_set() -
                       // must happen before ui_init() below so the very first
@@ -112,6 +123,23 @@ void loop(void) {
     ui_navScreen_processPendingRoute();
     xSemaphoreGive(uiMutex);
   }
+
+  // Services a queued map recenter/render - same reasoning again, added
+  // 2026-09-20: repositionTileLayer()'s raster-fill pass now costs
+  // 150-200+ms against real map data (was assumed "cheap, no I/O" back
+  // when a real tile only ever decoded 64 features), too long to run from
+  // slowUpdate()'s Ticker callback without starving the watchdog. See
+  // ui_navScreen.h's ui_navScreen_processPendingReposition() comment.
+  if (xSemaphoreTake(uiMutex, portMAX_DELAY) == pdTRUE) {
+    ui_navScreen_processPendingReposition();
+    xSemaphoreGive(uiMutex);
+  }
+
+  // Handles any pending HTTP request against the local config page - a
+  // cheap no-op whenever the AP isn't running (see wifi_config_server.h).
+  // No uiMutex needed: this only touches vehicle_config.h's globals and
+  // WebServer's own state, never an LVGL object.
+  wifi_config_server_poll();
 
   vTaskDelay(pdMS_TO_TICKS(5));
 }

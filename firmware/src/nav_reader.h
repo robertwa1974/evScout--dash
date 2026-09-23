@@ -20,20 +20,42 @@
 // (function names/signatures, decoded struct shapes) is UNCHANGED on
 // purpose so nothing consuming it needed to change for this swap.
 //
-// Fixed-capacity, no heap allocation for the decoded output structs
+// Fixed-capacity, no heap allocation INSIDE nav_tile_load() itself
 // (matches this project's existing convention, e.g. dyno_data.h's
-// DynoSample[DYNO_MAX_SAMPLES], and this MCU's constraints) - the
-// internal NavReader class DOES use PSRAM heap allocation for its index
-// band cache and color palette, same as upstream. Caps below are a
-// conservative starting guess for a small personal-route area, verified
-// only against real California data's densest tiles so far (see
-// CLAUDE.md's "Map tile format" section) - not an absolute ceiling. A
-// tile with more features/vertices/rings than the caps allow is NOT an
-// error - it's silently truncated (truncated flag set) rather than
-// corrupting memory or failing the whole tile.
-
-#define NAV_MAX_FEATURES_PER_TILE 64
-#define NAV_MAX_VERTICES_PER_FEATURE 32
+// DynoSample[DYNO_MAX_SAMPLES]) - the internal NavReader class DOES use
+// PSRAM heap allocation for its index band cache and color palette, same
+// as upstream. A tile with more features/vertices/rings than the caps
+// allow is NOT an error - it's silently truncated (truncated flag set)
+// rather than corrupting memory or failing the whole tile.
+//
+// Caps below were RAISED 2026-09-20 after real California data exposed
+// the original 64/32/4 guess as badly undersized, not just "conservative":
+// direct inspection of the real regional .nav files (not a mock/fixture)
+// found ordinary tiles with 174-316 features, and the single densest real
+// region (downtown LA, Z16_r409_c175.nav, 3762 populated tiles) had a
+// median of 320 features/tile, p99 of 791, and a max of 1066 - the old
+// cap of 64 was silently dropping 70-95% of most tiles' content, which is
+// what made the on-screen map look sparse/incomplete ("I do not see all
+// the tiles loaded" - it wasn't a loading bug, it was per-tile decode
+// truncation). NAV_MAX_FEATURES_PER_TILE=1024 covers all but 2 of the
+// 3762 tiles in that single densest region (99.9%), and comfortably
+// covers ordinary (non-downtown) tiles with huge margin. Vertex counts
+// within features were NOT similarly bad (p90=5, p99=29, max=65 in the
+// same densest tile - only 0.8% of features exceeded the old cap of 32),
+// so NAV_MAX_VERTICES_PER_FEATURE only needed a modest bump to 64 to
+// close that remaining gap almost entirely. Ring counts were fine as-is
+// (max observed 3, well under the existing cap of 4) - left unchanged.
+//
+// SIZING CONSEQUENCE: at these caps NavTileData is ~300KB (dominated by
+// NAV_MAX_FEATURES_PER_TILE * NAV_MAX_VERTICES_PER_FEATURE int16 pairs) -
+// far too large for this MCU's internal static RAM (the old ~12KB fit
+// fine as a plain `static NavTileData` global; this size does not).
+// Callers MUST heap_caps_malloc() this on PSRAM (MALLOC_CAP_SPIRAM) - see
+// ui_navScreen.cpp's allocateNavBuffers() - never as a stack local or a
+// plain static/global. The 8MB PSRAM on this board has ample room; this
+// was a real constraint on internal SRAM, not on PSRAM.
+#define NAV_MAX_FEATURES_PER_TILE 1024
+#define NAV_MAX_VERTICES_PER_FEATURE 64
 #define NAV_MAX_RINGS_PER_FEATURE 4
 #define NAV_MAX_TEXT_LEN 24
 
@@ -77,10 +99,13 @@ typedef struct {
     NavFeature features[NAV_MAX_FEATURES_PER_TILE];
 } NavTileData;
 
-// ~12KB per NavTileData at the caps above (dominated by
+// ~300KB per NavTileData at the caps above (dominated by
 // NAV_MAX_FEATURES_PER_TILE * NAV_MAX_VERTICES_PER_FEATURE int16 pairs) -
-// MUST be a static/global buffer, never a stack local; this MCU's task
-// stacks are far smaller than that.
+// MUST be a PSRAM heap_caps_malloc() allocation now, never a stack local
+// AND never a plain static/global either (see this header's sizing
+// comment above the caps - this grew ~25x when the caps were raised to
+// match real map data, well past what fits in internal SRAM alongside
+// everything else this MCU is already doing).
 
 // Loads one tile from the SD card (mounted by sd_driver.h - checks
 // sd_available() internally), from whichever regional file

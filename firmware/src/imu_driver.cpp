@@ -39,7 +39,7 @@ bool imu_init(void) {
     }
 
     imuOk = wrote && readOk && (whoAmI == MPU6050_WHO_AM_I_VAL);
-#ifdef DEBUG
+#if defined(DEBUG) || defined(CAN_TRACE)
     Serial.printf("imu_init: wrote=%d whoAmI=0x%02X ok=%d\n", wrote, whoAmI, imuOk);
 #endif
     return imuOk;
@@ -76,6 +76,20 @@ static void sampleImu() {
         imuData.sampleMs = millis();
         xSemaphoreGive(dataMutex);
     }
+
+#if defined(DEBUG) || defined(CAN_TRACE)
+    // Rate-limited to ~1Hz (the Ticker itself samples at 50Hz) - just
+    // enough to watch values move in real time while wiring/bench-testing,
+    // without flooding the log at the full sample rate.
+    static uint32_t lastPrintMs = 0;
+    uint32_t now = millis();
+    if (now - lastPrintMs >= 1000) {
+        lastPrintMs = now;
+        Serial.printf("[imu] a=(%.2f,%.2f,%.2f)g  g=(%.1f,%.1f,%.1f)dps\n",
+                      imuData.axG, imuData.ayG, imuData.azG,
+                      imuData.gxDps, imuData.gyDps, imuData.gzDps);
+    }
+#endif
 }
 
 void imu_start_sampling(void) {

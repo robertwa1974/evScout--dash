@@ -79,8 +79,30 @@ void fillPolygonGeneral(const int *px, const int *py, int numPoints, uint16_t co
     int clampedMaxY = std::min(maxY, canvasH - 1);
     int bucketCount = clampedMaxY - minY + 1;
     if (bucketCount <= 0) return;
-    if ((int)edgeBuckets.size() < bucketCount) edgeBuckets.resize(bucketCount, -1);
-    else std::fill(edgeBuckets.begin(), edgeBuckets.begin() + bucketCount, -1);
+    // ROOT CAUSE (found 2026-09-21, after days of investigation - see the
+    // grid-freeze history in ui_navScreen.cpp's NAV_GRID_TILES_X/Y comment
+    // for everything this was mistaken for first): edgeBuckets is reused
+    // across every polygon in every tile, growing only when a polygon
+    // needs more buckets than any previous one seen so far. The old code
+    // only initialized buckets to -1 on the ELSE branch (bucketCount fits
+    // in the existing size) - on the GROWTH branch, resize(n, -1) only
+    // value-initializes the NEWLY added elements; it leaves every
+    // pre-existing bucket slot holding whatever edgePool index it held
+    // after the PREVIOUS call. Since edgePool.clear() resets the pool to
+    // size 0 every call, those stale indices point past the current
+    // edgePool's live range - reading edgePool[staleIdx] pulls
+    // uninitialized bytes out of the vector's unused capacity as a fake
+    // Edge, and that garbage nextInBucket/nextActive/yMax can chain into a
+    // cycle that spins the scanline walk below forever (no crash, since
+    // the memory itself is validly-mapped PSRAM - it just never
+    // terminates). This is why the freeze looked content/order/address/
+    // timing-independent: it strikes whichever polygon is the first, in
+    // cumulative processing order across the whole grid, to set a new
+    // maximum bucket count - not any particular slot, tile, or feature.
+    // Fix: always clear the full [0, bucketCount) range actually used this
+    // call, whether or not a resize happened.
+    if ((int)edgeBuckets.size() < bucketCount) edgeBuckets.resize(bucketCount);
+    std::fill(edgeBuckets.begin(), edgeBuckets.begin() + bucketCount, -1);
 
     uint16_t count = (ringCount == 0) ? 1 : ringCount;
     uint16_t defaultEnds[1] = { (uint16_t)numPoints };
@@ -247,34 +269,38 @@ void nav_map_render_line(const int *px, const int *py, int numPoints,
                           bool drawCasing, uint16_t casingColor, uint8_t casingWidthPx) {
     if (numPoints < 2) return;
 
-    // PERFORMANCE (2026-09-16): drawWideLine() is an anti-aliased wedge
-    // rasterizer - real per-call cost on this hardware, and a real tile
-    // can have on the order of a few hundred LINESTRING segments (casing
-    // doubles that). Calling it for EVERY segment made this screen
-    // effectively freeze (all of it runs inside the same uiMutex-guarded
-    // block touch handling also needs, confirmed on real hardware: the
-    // board stayed alive - other tasks kept running - but the UI stopped
-    // responding for the whole render). Only pay for anti-aliasing where
-    // it's visually worth it (wide major roads); thin residential-street-
-    // width lines (the vast majority of features) use plain drawLine()
-    // (cheap Bresenham, no AA) instead - see this file's header comment
-    // for why drawWideLine() is used here at all instead of porting
-    // upstream's drawThickLine().
-    static constexpr uint8_t WIDE_LINE_THRESHOLD_PX = 3;
-    float r = widthPx / 2.0f;
+    // PERFORMANCE (2026-09-16, escalated to a hard disable 2026-09-20):
+    // drawWideLine() is an anti-aliased wedge rasterizer - real per-call
+    // cost on this hardware, and a real tile can have on the order of a
+    // few hundred LINESTRING segments (casing doubles that). The original
+    // 2026-09-16 fix only routed THIN lines through cheap plain
+    // drawLine() and kept calling drawWideLine() for anything wider than
+    // WIDE_LINE_THRESHOLD_PX, on the theory that wide (major-road) lines
+    // are rare enough per tile to afford it. Real hardware disproved that
+    // 2026-09-20: a real California tile (11423,26384, 233 features) had
+    // exactly ONE feature with widthPx above this threshold - the LAST
+    // one in the array (index 232) - and hitting it even once froze the
+    // board hard enough to trip the watchdog and reboot (confirmed via
+    // per-feature Serial tracing: the ">>> LINE i=232 ... widthPx=5"
+    // entry printed, its matching "<<< done" never did, "Setup starting"
+    // followed immediately). One occurrence per tile is enough to make
+    // this unusable, not just slow - drawWideLine() is now never called
+    // at all, full stop, in favor of plain drawLine() (cheap Bresenham,
+    // no AA, no width) unconditionally. Trade-off: wide/major roads no
+    // longer render visually thicker than residential streets - real,
+    // but preferable to an unusable/crashing map. Revisiting this means
+    // either profiling why drawWideLine() is this expensive on this
+    // hardware/LovyanGFX version specifically, or implementing thickness
+    // a cheaper way (e.g. a few parallel offset drawLine() calls) rather
+    // than re-enabling drawWideLine() itself.
+    (void)widthPx;      // no longer used to select a draw path - kept as a
+    (void)casingWidthPx; // parameter for signature/caller compatibility
     if (drawCasing) {
-        float rCasing = casingWidthPx / 2.0f;
-        for (int i = 1; i < numPoints; i++) {
-            if (casingWidthPx > WIDE_LINE_THRESHOLD_PX)
-                mapSprite.drawWideLine(px[i - 1], py[i - 1], px[i], py[i], rCasing, casingColor);
-            else
-                mapSprite.drawLine(px[i - 1], py[i - 1], px[i], py[i], casingColor);
-        }
-    }
-    if (widthPx > WIDE_LINE_THRESHOLD_PX) {
+        // Casing first (underneath), same order as the original
+        // drawWideLine()-based version - it's meant as a border the main
+        // color then draws on top of, not a cover-up.
         for (int i = 1; i < numPoints; i++)
-            mapSprite.drawWideLine(px[i - 1], py[i - 1], px[i], py[i], r, color);
-        return;
+            mapSprite.drawLine(px[i - 1], py[i - 1], px[i], py[i], casingColor);
     }
     for (int i = 1; i < numPoints; i++)
         mapSprite.drawLine(px[i - 1], py[i - 1], px[i], py[i], color);

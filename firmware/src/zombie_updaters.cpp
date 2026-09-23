@@ -380,8 +380,7 @@ void slowUpdate() {
     float gpsSpeed = 0, gpsHeading = 0, gpsAlt = 0;
     double gpsLat = 0, gpsLon = 0;
 
-    bool clockChanged = false, clockHasFix = false;
-    uint8_t clockHour = 0, clockMinute = 0;
+    bool clockChanged = false;
 
     // Fault banner (styling pass Phase 7) needs the CURRENT value every
     // tick, not just on change - a CAN dropout is detected purely by time
@@ -517,9 +516,6 @@ void slowUpdate() {
             old_clockMinute = gpsData.minute;
             old_clockHasFix = gpsData.hasFix;
         }
-        clockHour = gpsData.hour;
-        clockMinute = gpsData.minute;
-        clockHasFix = gpsData.hasFix;
         gpsHasFix = gpsData.hasFix;
         gpsSats = gpsData.satellites;
         gpsSpeed = gpsData.speedKph;
@@ -766,12 +762,17 @@ void slowUpdate() {
             }
         }
         if (gpsSpeedChanged) {
-            if (ui_gpsSpeedBar) lv_bar_set_value(ui_gpsSpeedBar, (int)gpsSpeed, LV_ANIM_ON);
+            // Display-only kph->mph conversion, same rule/constant as the
+            // main Speed screen (ui_speedScreen.h) - gpsData.speedKph itself
+            // stays kph, since GPS NAV's ETA math (updateTurnGuidance())
+            // does real distance/time physics on it in kph/km.
+            float gpsSpeedMph = gpsSpeed * KPH_TO_MPH;
+            if (ui_gpsSpeedBar) lv_bar_set_value(ui_gpsSpeedBar, (int)gpsSpeedMph, LV_ANIM_ON);
             if (ui_gpsSpeedValLabel) {
-                lv_label_set_text_fmt(ui_gpsSpeedValLabel, "%.0f", gpsSpeed);
+                lv_label_set_text_fmt(ui_gpsSpeedValLabel, "%.0f", gpsSpeedMph);
                 setWarnColor(ui_gpsSpeedValLabel, false);
             }
-            if (ui_navSpeedLabel) lv_label_set_text_fmt(ui_navSpeedLabel, ICON_SPEED " %.0f km/h", gpsSpeed);
+            if (ui_navSpeedLabel) lv_label_set_text_fmt(ui_navSpeedLabel, ICON_SPEED " %.0f mph", gpsSpeedMph);
         }
         if (gpsLatLonChanged) {
             if (ui_gpsLatValLabel) {
@@ -785,6 +786,10 @@ void slowUpdate() {
             // makes sense when the position actually moved). No-ops
             // internally if ui_navScreen hasn't been created yet.
             ui_navScreen_addPoint(gpsLat, gpsLon);
+            // Destinations screen's Home/Work distance labels + nearest-
+            // charging-station row - same reasoning, no-ops internally if
+            // ui_destinationsScreen hasn't been created yet.
+            ui_destinationsScreen_updateDistances(gpsLat, gpsLon);
         }
         if (gpsHeadingChanged) {
             if (ui_gpsHeadingBar) lv_bar_set_value(ui_gpsHeadingBar, (int)gpsHeading, LV_ANIM_ON);
@@ -802,17 +807,7 @@ void slowUpdate() {
             }
         }
         if (clockChanged) {
-            if (ui_splashClockLabel) {
-                if (clockHasFix) lv_label_set_text_fmt(ui_splashClockLabel, "%02d:%02d", clockHour, clockMinute);
-                else lv_label_set_text(ui_splashClockLabel, "--:--");
-            }
-            if (ui_splashClockCaptionLabel) {
-                lv_label_set_text(ui_splashClockCaptionLabel, clockHasFix ? "UTC" : "UTC - waiting for GPS fix");
-            }
-            if (ui_navClockLabel) {
-                if (clockHasFix) lv_label_set_text_fmt(ui_navClockLabel, "%02d:%02d", clockHour, clockMinute);
-                else lv_label_set_text(ui_navClockLabel, "--:--");
-            }
+            refreshClockDisplay();
         }
         xSemaphoreGive(uiMutex);
     }
@@ -861,6 +856,47 @@ void setDefaultWarnSet() {
 }
 
 display_pref_t displayPref = DISPLAY_PREF_AUTO;
+
+// Manual UTC display offset in whole hours (2026-09-22) - e.g. -8 for PST,
+// -7 for PDT. Purely a DISPLAY-time shift applied to the clock/ETA labels
+// below; gpsData.hour/minute/second themselves stay true UTC always, and
+// resolveDisplayPref()'s sunrise/sunset math further down this file reads
+// gpsData directly (not through this offset) since that calculation is
+// astronomically defined in UTC and would give wrong sunrise/sunset times
+// if shifted. No automatic DST handling - the user flips this by 1 twice a
+// year, same as any dash clock with no RTC/timezone database.
+int utcOffsetHours = -8;
+
+void refreshClockDisplay(void) {
+    uint8_t hour = 0, minute = 0;
+    bool hasFix = false;
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+        hour = gpsData.hour;
+        minute = gpsData.minute;
+        hasFix = gpsData.hasFix;
+        xSemaphoreGive(dataMutex);
+    }
+    // +24/%24 keeps the result in [0,24) regardless of sign, so a negative
+    // offset near midnight UTC wraps to the previous/next day's hour
+    // correctly (minutes are never affected - every real-world offset this
+    // project supports is whole-hour).
+    int localHour = ((int)hour + utcOffsetHours % 24 + 24) % 24;
+    char tzCaption[24];
+    snprintf(tzCaption, sizeof(tzCaption), "UTC%+d", utcOffsetHours);
+
+    if (ui_splashClockLabel) {
+        if (hasFix) lv_label_set_text_fmt(ui_splashClockLabel, "%02d:%02d", localHour, minute);
+        else lv_label_set_text(ui_splashClockLabel, "--:--");
+    }
+    if (ui_splashClockCaptionLabel) {
+        if (hasFix) lv_label_set_text(ui_splashClockCaptionLabel, tzCaption);
+        else lv_label_set_text_fmt(ui_splashClockCaptionLabel, "%s - waiting for GPS fix", tzCaption);
+    }
+    if (ui_navClockLabel) {
+        if (hasFix) lv_label_set_text_fmt(ui_navClockLabel, "%02d:%02d", localHour, minute);
+        else lv_label_set_text(ui_navClockLabel, "--:--");
+    }
+}
 
 // --- Day/night Auto-mode resolution (GPS-based, 2026-09-14) ----------------
 // Cooper (1969) solar declination approximation - deliberately the simple
@@ -964,6 +1000,7 @@ void getDisplayMode() {
     int pref = preferences.getInt("pref", DISPLAY_PREF_AUTO);
     uint8_t dayBright = preferences.getUChar("dayBright", 220);
     uint8_t nightBright = preferences.getUChar("nightBright", 60);
+    utcOffsetHours = preferences.getInt("utcOff", -8);
     preferences.end();
 
     displayPref = (display_pref_t)pref;
@@ -976,5 +1013,6 @@ void updateDisplayMode() {
     preferences.putInt("pref", (int)displayPref);
     preferences.putUChar("dayBright", ui_theme_get_day_brightness());
     preferences.putUChar("nightBright", ui_theme_get_night_brightness());
+    preferences.putInt("utcOff", utcOffsetHours);
     preferences.end();
 }

@@ -15,6 +15,23 @@ static lv_color_t colorForState(ui_pill_state_t state) {
 lv_obj_t *ui_pill_create(lv_obj_t *parent, int16_t w, int16_t h, int16_t radius,
                           lv_obj_t **outLabel, const lv_font_t *labelFont) {
     lv_obj_t *pill = lv_obj_create(parent);
+    // Every pill this function has ever built is a pure status indicator,
+    // never its own tappable control - but lv_obj_create() defaults to
+    // CLICKABLE with no LV_OBJ_FLAG_EVENT_BUBBLE, so a plain lv_obj sitting
+    // on top of a parent's own click handler silently swallows any tap
+    // that lands on it instead of passing through. Real-hardware bug found
+    // 2026-09-22: the Dyno LIVE screen's whole-screen "tap anywhere to
+    // arm" handler (ui_dynoLiveScreen.cpp's screenTapCb(), bound to the
+    // screen root) never fired for taps landing directly on this pill -
+    // exactly where a user reads "READY - tap to arm" and naturally taps.
+    // Clearing CLICKABLE here lets LVGL's hit-testing fall through to the
+    // nearest clickable ancestor instead (the screen root, in Dyno's
+    // case), matching every pill's actual intended behavior everywhere
+    // else too - none of the other 4 pills (Speed/GPS/Battery/Charging)
+    // were ever meant to be independently tappable either, they just
+    // hadn't surfaced the bug since nothing sits directly behind them
+    // depending on the tap passing through.
+    lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_size(pill, w, h);
     lv_obj_set_style_radius(pill, radius, LV_PART_MAIN | LV_STATE_DEFAULT);

@@ -32,6 +32,7 @@ extern "C" {
 #include "ui_chargingScreen.h"
 #include "ui_gpsScreen.h"
 #include "ui_navScreen.h"
+#include "ui_destinationsScreen.h"
 #include "ui_dynoLiveScreen.h"
 #include "ui_dynoResultsScreen.h"
 #include "ui_settingsScreen.h"

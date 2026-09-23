@@ -14,10 +14,13 @@
 
 #include "zombie_updaters.h"  // included for consistency with the rest of the UI (no myData/dataMutex use here - results are computed once from dyno_data.h, not live)
 #include "dyno_data.h"
+#include "vehicle_config.h"  // dynoVehicleMassKg - was #define DYNO_VEHICLE_MASS_KG here, now NVS-backed/editable live via wifi_config_server.h, see that header
 
-// TODO: tune to your actual curb weight + driver. This is the only physics
-// constant the road-load estimate needs beyond the recorded samples.
-#define DYNO_VEHICLE_MASS_KG 1800.0f
+// Display-only kph->mph conversion (2026-09-22), same constant/rule as
+// ui_dynoLiveScreen.cpp - dynoRun[].speedKph itself stays kph, since the
+// road-load power physics below (dv_ms/v_ms) needs real km/h->m/s math;
+// only the chart's plotted X values and axis label are mph.
+static const float KPH_TO_MPH = 0.621371f;
 
 lv_obj_t * ui_dynoResultsScreen = NULL;
 
@@ -110,6 +113,16 @@ void ui_dynoResultsScreen_screen_init(void)
     lv_obj_clear_flag(legendCont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_opa(legendCont, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(legendCont, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    // Real-hardware bug found 2026-09-22: this container never zeroed its
+    // padding (unlike every other manually-styled container in this
+    // codebase), so it was inheriting LVGL's default theme's own padding
+    // (see ui.c's lv_theme_default_init() - the same stock theme that
+    // caused the Settings screen's white-on-white contrast bug). That
+    // padding ate into this container's tight, fixed 60px height, pushing
+    // the second legend row (Electrical) low enough to clip - only the
+    // top of its letters were visible. Explicit zero, matching how every
+    // other non-padded container here is built.
+    lv_obj_set_style_pad_all(legendCont, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_size(legendCont, 160, 60);
     lv_obj_align_to(legendCont, chart, LV_ALIGN_OUT_RIGHT_TOP, 10, 0);
     legendRoadSwatch = createLegendRow(legendCont, 0, ui_theme_accent(), "Road-load", &legendRoadLabel);
@@ -117,7 +130,7 @@ void ui_dynoResultsScreen_screen_init(void)
 
     xAxisLabel = lv_label_create(ui_dynoResultsScreen);
     lv_obj_align_to(xAxisLabel, chart, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
-    lv_label_set_text(xAxisLabel, "Speed (km/h)");
+    lv_label_set_text(xAxisLabel, "Speed (mph)");
     lv_obj_set_style_text_color(xAxisLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(xAxisLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -157,14 +170,14 @@ void ui_dynoResultsScreen_screen_init(void)
                     float dv_ms = (dynoRun[i].speedKph - dynoRun[i - 1].speedKph) / 3.6f;
                     float accel = dv_ms / dt;
                     float v_ms = dynoRun[i].speedKph / 3.6f;
-                    roadKw = (accel * DYNO_VEHICLE_MASS_KG * v_ms) / 1000.0f;
+                    roadKw = (accel * dynoVehicleMassKg * v_ms) / 1000.0f;
                 }
                 sumRoad += roadKw;
                 sumElec += elecKw;
                 summedCount++;
             }
 
-            int xVal = (int)(dynoRun[i].speedKph + 0.5f);
+            int xVal = (int)(dynoRun[i].speedKph * KPH_TO_MPH + 0.5f);
             roadX[i] = xVal; roadY[i] = (lv_coord_t)roadKw;
             elecX[i] = xVal; elecY[i] = (lv_coord_t)elecKw;
 
@@ -176,7 +189,7 @@ void ui_dynoResultsScreen_screen_init(void)
     float axisMaxKw = peakRoad > peakElec ? peakRoad : peakElec;
     if (axisMaxKw < 10.0f) axisMaxKw = 10.0f;  // floor so a near-zero/degenerate run doesn't collapse the axis
     lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, (lv_coord_t)(axisMaxKw * 1.2f));
-    lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_X, 0, 100);
+    lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_X, 0, 70);  // was 0-100 kph (DYNO_TARGET_KPH=96.6); 0-70mph gives the same ~60mph-target-plus-headroom shape in mph
     lv_chart_set_axis_tick(chart, LV_CHART_AXIS_PRIMARY_Y, 6, 3, 5, 2, true, 40);
     lv_chart_set_axis_tick(chart, LV_CHART_AXIS_PRIMARY_X, 6, 3, 5, 2, true, 20);
     lv_chart_refresh(chart);

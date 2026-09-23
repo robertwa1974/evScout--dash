@@ -8,6 +8,7 @@
 // gps_poll() no-op under DEBUG/CAN_TRACE.
 
 #define GPS_BAUD 9600  // NEO-6M/NEO-8M factory-default NMEA baud
+#define GPS_FIX_STALE_MS 3000  // no fresh location sentence in this long -> treat as lost, not just "didn't update this exact poll"
 
 GpsData gpsData = {0};
 static TinyGPSPlus gps;
@@ -34,7 +35,21 @@ void gps_poll(void) {
 
     if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
         if (gps.location.isValid()) {
-            gpsData.hasFix    = gps.location.isUpdated();
+            // BUG FIX (2026-09-22, found bench-testing real GPS hardware for
+            // the first time - "intermittent fix/no-fix with 9-10 sats
+            // locked" was the symptom): isValid() means "has this object
+            // ever received a good fix" (persists true once set), while
+            // isUpdated() means "did a NEW sentence complete since the last
+            // time this was checked" - a genuinely momentary flag.
+            // gps_poll() runs many times per second draining Serial, but a
+            // location-bearing NMEA sentence typically only arrives ~1Hz, so
+            // isUpdated() is false on nearly every poll regardless of fix
+            // quality - it was flickering hasFix off on pure polling-cadence
+            // noise, not a real loss of fix. age() (ms since the last valid
+            // update) against a staleness window is the correct check for
+            // "is this fix still current," the same pattern this project
+            // already uses for CAN-freshness elsewhere.
+            gpsData.hasFix    = gps.location.age() < GPS_FIX_STALE_MS;
             gpsData.latitude  = gps.location.lat();
             gpsData.longitude = gps.location.lng();
         }

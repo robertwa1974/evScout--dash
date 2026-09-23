@@ -22,32 +22,36 @@
 // nav_turn.h) use real Haversine distance instead - only the on-screen
 // pixel projection uses this flat-earth shortcut.
 //
-// Routing (2026-09-16 - scope narrowed from "general nav" to "get me
-// home"): a full destination-entry UI (address search, long-press-to-set)
-// is real scope this project isn't taking on - the actual, explicitly
-// requested feature is a single "Home" button that routes back to one
-// fixed, hardcoded location (HOME_LAT/HOME_LON below), not navigation to
+// Routing (scope narrowed 2026-09-16 from "general nav" to a small fixed
+// destination set, EXTENDED 2026-09-22 from Home-only to Home/Work/nearest
+// charging station): a full destination-entry UI (address search, long-
+// press-to-set) is real scope this project isn't taking on - the actual,
+// explicitly requested feature is picking from a small, fixed list of
+// named destinations (see ui_destinationsScreen.h), not navigation to
 // anywhere. This is a real simplification, not a placeholder: no
-// destination search UI is planned, ever. Routing is button-TRIGGERED
-// (ui_event_navHomeBtn), not automatic on screen open - see that
-// handler's comment. Router::route() needs a real ROUTE.bin (CAR
-// profile) on the SD card to succeed - if that file doesn't exist yet,
-// routing fails gracefully (RouterResult != OK) and the turn banner shows
-// "PRESS HOME" (styling pass item 16, 2026-09-18 - was "NO ROUTE", changed
-// to match the actual no-route call to action rather than a bare status
-// word), same "false is fine, just means nothing there" convention
+// destination search UI is planned, ever. Destination PICKING lives on
+// ui_destinationsScreen.cpp now; this file just owns the routing
+// computation itself, button-TRIGGERED via ui_navScreen_requestRoute()
+// (called from that screen's row-tap handler), never automatic on screen
+// open. Router::route() needs a real ROUTE.bin (CAR profile) on the SD
+// card to succeed - if that file doesn't exist yet, routing fails
+// gracefully (RouterResult != OK) and the turn banner shows "SELECT
+// DESTINATION" (was "PRESS HOME" before the Home-only button was
+// replaced), same "false is fine, just means nothing there" convention
 // nav_tile_load() already uses.
 //
 // No SquareLine project (same as every other hand-written screen here).
 //
 // Navigation: physical swipe LEFT -> GPS (back, stays - both in the
-// dock's GPS group). Physical swipe RIGHT to Dyno LIVE is REMOVED
-// (styling/UX pass Phase 5, 2026-09-18) - cross-group, Dyno is dock-
-// reachable now (see ui_dock.h's mapping comment and the plan's swipe-
-// removal table). This board reports gesture direction inverted from the
+// dock's GPS group). Physical swipe RIGHT -> Destinations (2026-09-22,
+// re-added here after being removed in the styling/UX pass - see
+// ui_event_navScreen()'s comment; Dyno LIVE is one swipe further from
+// there, and still dock-reachable directly - see ui_dock.h's mapping
+// comment). This board reports gesture direction inverted from the
 // physical swipe (see CLAUDE.md's "Touch gesture direction") - the code
-// checks LV_DIR_RIGHT for the physical-LEFT swipe. Intentional; don't
-// "fix" it without re-verifying on hardware first.
+// checks LV_DIR_RIGHT for the physical-LEFT swipe and LV_DIR_LEFT for the
+// physical-RIGHT swipe. Intentional; don't "fix" it without re-verifying
+// on hardware first.
 // ============================================================================
 
 #include "ui.h"
@@ -57,15 +61,15 @@
 #include "nav_turn.h"
 #include "gps_math.h"
 #include "gps_driver.h"
+#include "zombie_updaters.h"  // utcOffsetHours - see updateTurnGuidance()'s ETA calc
 #include <math.h>
+#include <esp_heap_caps.h>
 
 lv_obj_t * ui_navScreen = NULL;
 
 static lv_obj_t * ui_navTopBar = NULL;
 lv_obj_t * ui_navClockLabel = NULL;
 lv_obj_t * ui_navSocLabel = NULL;
-static lv_obj_t * ui_navHomeBtn = NULL;
-static lv_obj_t * ui_navHomeBtnLabel = NULL;
 
 static lv_obj_t * ui_navCanvas = NULL;
 static lv_obj_t * ui_navTileLayer = NULL;  // map geometry - created before
@@ -126,27 +130,131 @@ static lv_point_t trailScreenPoints[TRAIL_MAX_POINTS];
                            // fixture; real map data should target this
                            // zoom too until there's a reason to vary it
 
-static NavTileData currentTile;  // ~12KB - static, never a stack local
-                                   // (see nav_reader.h)
-static bool tileLoaded = false;
-static uint32_t loadedTileX = 0, loadedTileY = 0;
+// RESOLVED 2026-09-20 - see nav_map_render.cpp's nav_map_render_line()
+// comment for the full story: raising NAV_MAX_FEATURES_PER_TILE
+// (nav_reader.h, 64->1024) to fix real per-tile DECODING surfaced a
+// pre-existing hazard in the RENDER path instead - drawWideLine() (used
+// for any LINESTRING/casing wider than 3px) could hang/reboot the board
+// on a single occurrence, and a real tile is now guaranteed to include
+// every wide-road feature it actually has (the old 64-feature cap just
+// happened to get lucky and rarely/never decode one). Root-caused via
+// per-feature Serial tracing on real hardware down to one specific
+// feature (a widthPx=5 LINESTRING, last in a 233-feature tile) and fixed
+// at the source in nav_map_render_line() (drawWideLine() no longer
+// called at all). No render-time budget is needed anymore - every
+// decoded feature (up to NAV_MAX_FEATURES_PER_TILE) is rendered.
 
-// TEXT/POINT features only, now - LINESTRING/POLYGON render via
-// nav_map_render.h's raster sprite instead (see that header's comment
-// for why: real filled polygons with holes, which lv_line can't do).
-static lv_obj_t * tileFeatureObjs[NAV_MAX_FEATURES_PER_TILE];
+// MULTI-TILE GRID (added 2026-09-20): a single NAV_TILE_ZOOM tile only
+// covers ~513m across at this latitude (611.5m projected Mercator tile
+// size * cos(33.06 deg)), while the canvas covers CANVAS_W*METERS_PER_PIXEL
+// = 2400m across - a single loaded tile filled only a small, roughly
+// centered patch of the screen ("I still only see a small map" - real
+// user feedback, not a guess). Fix: load and render a grid of tiles
+// around the vehicle instead of just one. Sized 5 wide x 2 tall rather
+// than a symmetric NxN square:
+// - Width (5 tiles = 2565m, centered on the vehicle's own tile: 2 tiles
+//   each side) comfortably exceeds the 2400m canvas width with margin on
+//   both edges regardless of the vehicle's exact position within its own
+//   tile - this is the dimension that was badly undercovered (a single
+//   tile's ~513m is only ~21% of the 2400m canvas width).
+// - Height (2 tiles = 1026m: the vehicle's own tile + one neighbor,
+//   asymmetric - only one side gets a full extra tile of margin) is a
+//   deliberate compromise, not a full guarantee like width gets: a single
+//   tile's ~513m already covered ~60% of the 858m canvas height (a much
+//   smaller gap than width's 21%), so less additional coverage is needed
+//   here, and the real constraint is PSRAM - see below.
+// PSRAM: confirmed via ui_splash_truck.cpp's own boot-time
+// heap_caps_get_free_size() log that only ~4.78MB PSRAM is free after
+// splash preload (splash's own ~2.4MB of frame buffers are never freed -
+// a separate, pre-existing inefficiency, not addressed here). At ~304KB
+// per grid slot (NavTileData ~300KB dominates; gridFeatureObjs's
+// NAV_MAX_FEATURES_PER_TILE pointers add ~4KB), a symmetric 5x3 (15
+// tiles, ~4.56MB) would leave under 250KB free for GraphLoader's page
+// cache (which needs up to ~960KB when routing - see graph_loader.h) -
+// too tight, risking an allocation failure the instant "Home" is pressed
+// while the full grid is loaded. 5x2 (10 tiles, ~3.04MB) leaves ~1.74MB
+// free instead - comfortable margin for GraphLoader plus everything else.
+//
+// RESOLVED 2026-09-21, root cause found and fixed in
+// nav_map_render.cpp::fillPolygonGeneral() - see that function's comment
+// for the mechanism. Summary for anyone who finds the old investigation
+// referenced elsewhere (git history, prior comments in this file): 5x2
+// initially looked freeze-prone on real hardware in a way that survived
+// disproving PSRAM/internal-RAM exhaustion, PSRAM-DMA bandwidth
+// contention (a vTaskDelay(1) per-slot throttle, modeled on
+// waveshareteam/ESP32-S3-Touch-LCD-5#1, did NOT fix it - removed again
+// once the real cause was found), memory address/bank boundaries, and
+// GPS-tick re-entrancy into repositionTileLayer(). Per-feature Serial
+// tracing eventually caught it stalling inside fillPolygonGeneral()
+// itself, on the first polygon in a whole 10-tile pass whose bounding
+// box set a new maximum edgeBuckets size - a genuine memory-safety bug
+// (stale linked-list data surviving a vector growth), not anything about
+// PSRAM, timing, or this grid's dimensions. Confirmed stable at 5x2
+// across multiple consecutive full render passes once fixed.
+#define NAV_GRID_TILES_X 5
+#define NAV_GRID_TILES_Y 2
+#define NAV_GRID_TILE_COUNT (NAV_GRID_TILES_X * NAV_GRID_TILES_Y)
 
-// +1 per feature so a closed polygon ring can repeat its first vertex.
-static int tileFeaturePX[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
-static int tileFeaturePY[NAV_MAX_FEATURES_PER_TILE][NAV_MAX_VERTICES_PER_FEATURE + 1];
+// One NavTileData + one LVGL-object-pointer array per grid slot, PSRAM-
+// allocated by allocateNavBuffers() (called once, lazily, from the first
+// ui_navScreen_screen_init()) - see nav_reader.h's sizing comment for why
+// a single NavTileData can no longer be a plain static/global (~300KB at
+// NAV_MAX_FEATURES_PER_TILE=1024). Allocated ONCE and kept for the
+// firmware's lifetime rather than freed on every screen close/reopen
+// (like nav_map_render's sprite is) - repeatedly alloc/freeing ~3MB
+// across many screen visits over a real drive risks PSRAM fragmentation
+// for no benefit.
+static NavTileData * gridTiles[NAV_GRID_TILE_COUNT] = { nullptr };
+static lv_obj_t ** gridFeatureObjs[NAV_GRID_TILE_COUNT] = { nullptr };
+static bool gridSlotLoaded[NAV_GRID_TILE_COUNT] = { false };  // per-slot nav_tile_load() result - false is a legitimate "no data here" (e.g. open water), not an error
 
-// --- Routing: "phone home" (see this file's header comment for scope) ---
-// 1377 Calle Scott, Encinitas, CA 92024 - geocoded via OpenStreetMap's
-// Nominatim (fitting, since NAVMAP/ROUTE.bin are both OSM-derived data
-// already), not GPS-surveyed - good enough for road-level routing, not
-// meant to be a rooftop-accurate point.
-#define HOME_LAT 33.0304742
-#define HOME_LON -117.2533789
+static bool gridLoaded = false;                 // whether loadGrid() has ever run
+static uint32_t gridCenterTileX = 0, gridCenterTileY = 0;  // which tile the current grid is centered on
+
+// Allocates every gridTiles[]/gridFeatureObjs[] slot above. Returns false
+// (logged) if PSRAM is somehow already exhausted by something else -
+// callers must treat that as "no map tile geometry available," same
+// "degrade, don't crash" convention ui_splash_truck.cpp uses for its own
+// PSRAM frame buffers, not a reason to abort screen init.
+static bool allocateNavBuffers(void) {
+    if (gridTiles[0]) return true;  // already allocated from an earlier call
+
+    bool ok = true;
+    for (int s = 0; s < NAV_GRID_TILE_COUNT; s++) {
+        // calloc, not malloc: unlike the old single `static NavTileData`
+        // (implicitly zero-initialized .bss), a PSRAM heap allocation is
+        // NOT zeroed - featureCount must start at 0 so
+        // repositionTileLayer()'s `for (i < tile->featureCount)` loop
+        // can't ever iterate over uninitialized garbage before the first
+        // real nav_tile_load() for that slot (possible: tile-load and
+        // reposition/render are both pending-flag-serviced from loop()
+        // independently - see ui_navScreen_processPendingTileLoad()/
+        // ui_navScreen_processPendingReposition() - with no ordering
+        // guarantee between them on a screen's first fix).
+        gridTiles[s] = (NavTileData *)heap_caps_calloc(1, sizeof(NavTileData), MALLOC_CAP_SPIRAM);
+        gridFeatureObjs[s] = (lv_obj_t **)heap_caps_calloc(
+            NAV_MAX_FEATURES_PER_TILE, sizeof(lv_obj_t *), MALLOC_CAP_SPIRAM);
+        if (!gridTiles[s] || !gridFeatureObjs[s]) ok = false;
+    }
+
+    if (!ok) {
+#if defined(DEBUG) || defined(CAN_TRACE)
+        Serial.println("[nav] PSRAM allocation failed for one or more grid tile buffers - map tile geometry may not fully render this session");
+#endif
+    }
+    return ok;
+}
+
+// --- Routing (2026-09-22: generalized from "phone home" to an arbitrary
+// destination - see ui_navScreen_requestRoute() below and
+// ui_destinationsScreen.h for why: real bench use found a single Home
+// button + "PRESS HOME" banner confusing and too much canvas real estate,
+// so destination PICKING moved to its own screen (Home/Work/nearest
+// charging station), while this file keeps owning the actual routing
+// computation + turn-by-turn display. Still no address-entry/search UI -
+// see this file's header comment for why that's out of scope, ever; the
+// destination is always one of a small, fixed set chosen elsewhere, never
+// typed in here.) ---
 #define NAV_ROUTE_SPEED_KMH 60  // selects the CAR ROUTE.bin profile - see routeBinPath()
 
 #define NAV_ROUTE_MAX_POINTS 300  // cap for on-screen route line drawing -
@@ -161,17 +269,19 @@ static int routePY[NAV_ROUTE_MAX_POINTS];
 static TrackVector navRoute;
 static TurnPointVector navTurns;
 static NavState navState;
-static bool routeComputePending = false;  // set by the Home button, serviced
-                                            // from loop() - see
+static bool routeComputePending = false;  // set by ui_navScreen_requestRoute(),
+                                            // serviced from loop() - see
                                             // ui_navScreen_processPendingRoute()
-static bool routeComputing = false;   // true from button press until
+static bool routeComputing = false;   // true from the request until
                                         // processPendingRoute() finishes -
                                         // lets updateTurnGuidance() show a
-                                        // "ROUTING HOME..." state instead of
-                                        // "PRESS HOME" during the multi-second
-                                        // (sometimes 20+s, see this file's
-                                        // header) blocking computation
+                                        // "ROUTING..." state instead of
+                                        // "SELECT DESTINATION" during the
+                                        // multi-second (sometimes 20+s, see
+                                        // this file's header) blocking
+                                        // computation
 static double routeComputeLat = 0, routeComputeLon = 0;
+static double routeDestLat = 0, routeDestLon = 0;  // target of the pending/active route - see ui_navScreen_requestRoute()
 
 // RGB565 -> lv_color_t without assuming lv_color_t's internal union layout
 // (LV_COLOR_DEPTH is 16 per include/lv_conf.h, but going through
@@ -184,23 +294,32 @@ static lv_color_t navFeatureColor(uint16_t rgb565) {
     return lv_color_make((r5 * 527 + 23) >> 6, (g6 * 259 + 33) >> 6, (b5 * 527 + 23) >> 6);
 }
 
-static void clearTileLayer(void) {
-    for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) {
-        if (tileFeatureObjs[i]) {
-            lv_obj_del(tileFeatureObjs[i]);
-            tileFeatureObjs[i] = NULL;
+// Deletes every grid slot's LVGL objects (TEXT/POINT features) - called
+// before a grid reload so a slot whose tile content changed (or that
+// used to have data and now doesn't) doesn't leave stale objects behind.
+static void clearGridFeatureObjs(void) {
+    for (int s = 0; s < NAV_GRID_TILE_COUNT; s++) {
+        lv_obj_t ** objs = gridFeatureObjs[s];
+        if (!objs) continue;
+        for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) {
+            if (objs[i]) {
+                lv_obj_del(objs[i]);
+                objs[i] = NULL;
+            }
         }
     }
 }
 
-// Creates one LVGL object per decoded feature in currentTile - called only
-// when the vehicle crosses into a different tile (i.e. after a fresh
-// nav_tile_load()), not on every GPS fix. Screen position isn't set here;
-// repositionTileLayer() does that every fix, same split as the trail's
-// addPoint()/redrawTrail().
-static void buildTileLayer(void) {
-    for (uint16_t i = 0; i < currentTile.featureCount; i++) {
-        NavFeature *f = &currentTile.features[i];
+// Creates one LVGL object per decoded feature in gridTiles[slot] - called
+// once per slot right after that slot's nav_tile_load() succeeds, not on
+// every GPS fix. Screen position isn't set here; repositionTileLayer()
+// does that every fix, same split as the trail's addPoint()/redrawTrail().
+static void buildGridSlotLayer(int slot) {
+    NavTileData * tile = gridTiles[slot];
+    lv_obj_t ** objs = gridFeatureObjs[slot];
+    if (!tile || !objs) return;  // PSRAM alloc failed - see allocateNavBuffers()
+    for (uint16_t i = 0; i < tile->featureCount; i++) {
+        NavFeature *f = &tile->features[i];
         lv_color_t color = navFeatureColor(f->colorRgb565);
 
         if (f->geomType == NAV_GEOM_TEXT) {
@@ -215,7 +334,7 @@ static void buildTileLayer(void) {
                 lv_obj_set_style_border_width(label, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
                 lv_obj_set_style_pad_all(label, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
             }
-            tileFeatureObjs[i] = label;
+            objs[i] = label;
         } else if (f->geomType == NAV_GEOM_POINT) {
             lv_obj_t * dot = lv_obj_create(ui_navTileLayer);
             lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
@@ -224,13 +343,13 @@ static void buildTileLayer(void) {
             lv_obj_set_style_bg_color(dot, color, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_bg_opa(dot, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-            tileFeatureObjs[i] = dot;
+            objs[i] = dot;
         } else {
             // LINESTRING or POLYGON - rendered into nav_map_render's
             // raster sprite instead of an lv_obj (see file header); no
-            // LVGL object needed, tileFeatureObjs[i] stays NULL so
+            // LVGL object needed, objs[i] stays NULL so
             // repositionTileLayer() knows to route this feature there.
-            tileFeatureObjs[i] = NULL;
+            objs[i] = NULL;
         }
     }
 }
@@ -284,6 +403,9 @@ static void drawRouteLine(double curLat, double curLon, double cosLat) {
 // called every GPS fix (not just on tile reload) so map geometry stays
 // centered as the vehicle moves, even between tile crossings.
 static void repositionTileLayer(double curLat, double curLon, double cosLat) {
+#if defined(DEBUG) || defined(CAN_TRACE)
+    uint32_t tRepoStart = millis();
+#endif
     int cx = CANVAS_W / 2;
     int cy = CANVAS_H / 2;
 
@@ -295,101 +417,174 @@ static void repositionTileLayer(double curLat, double curLon, double cosLat) {
     // all.
     nav_map_render_begin_frame(lv_color_to16(ui_theme_panel_bg()));
 
-    for (uint16_t i = 0; i < currentTile.featureCount; i++) {
-        NavFeature *f = &currentTile.features[i];
+    // Per-feature scratch space, reused across every feature of every
+    // grid slot - only ever holds ONE feature's projected vertices at a
+    // time (computed, immediately handed to nav_map_render_polygon()/
+    // _line(), then overwritten by the next feature), so this can be a
+    // small stack local instead of a PSRAM buffer sized for a whole
+    // tile's worth of features (the old tileFeaturePX/PY design
+    // allocated NAV_MAX_FEATURES_PER_TILE rows but, on inspection, never
+    // actually needed more than one row live at once either - this just
+    // makes that explicit, and makes a multi-slot grid affordable memory-
+    // wise: the per-slot NavTileData below is the only thing that
+    // actually needs to persist between fixes, since decoded local-tile-
+    // space vertices don't change, only their re-projection to screen
+    // space each fix does).
+    int scratchPX[NAV_MAX_VERTICES_PER_FEATURE + 1];
+    int scratchPY[NAV_MAX_VERTICES_PER_FEATURE + 1];
 
-        if (f->geomType == NAV_GEOM_TEXT || f->geomType == NAV_GEOM_POINT) {
-            lv_obj_t * obj = tileFeatureObjs[i];
-            if (!obj) continue;
-            int16_t lx = (f->geomType == NAV_GEOM_TEXT) ? f->textX : f->vx[0];
-            int16_t ly = (f->geomType == NAV_GEOM_TEXT) ? f->textY : f->vy[0];
-            double lat, lon;
-            nav_tile_local_to_latlon(NAV_TILE_ZOOM, currentTile.tileX, currentTile.tileY, lx, ly, &lat, &lon);
-            double metersNorth = (lat - curLat) * METERS_PER_DEG_LAT;
-            double metersEast  = (lon - curLon) * METERS_PER_DEG_LAT * cosLat;
-            lv_coord_t x = (lv_coord_t)(cx + metersEast / METERS_PER_PIXEL);
-            lv_coord_t y = (lv_coord_t)(cy - metersNorth / METERS_PER_PIXEL);
-            // Anchor at top-left rather than centering on the label/dot's
-            // own size - close enough for a first pass, avoids a
-            // lv_obj_get_size() round-trip per feature per fix.
-            lv_obj_set_pos(obj, x, y);
-        } else {
-            // LINESTRING or POLYGON - project every vertex (all rings,
-            // not just the outer one - nav_map_render_polygon() supports
-            // holes via ringEnds, unlike the lv_line approach this
-            // replaced) and hand off to the raster renderer.
-            uint16_t vertCount = f->vertexCount;
-            if (vertCount > NAV_MAX_VERTICES_PER_FEATURE) vertCount = NAV_MAX_VERTICES_PER_FEATURE;
+    for (int slot = 0; slot < NAV_GRID_TILE_COUNT; slot++) {
+        if (!gridSlotLoaded[slot]) continue;  // e.g. open water / outside generated area - not an error
+        NavTileData * tile = gridTiles[slot];
+        lv_obj_t ** objs = gridFeatureObjs[slot];
+        if (!tile || !objs) continue;  // PSRAM alloc failed - see allocateNavBuffers()
 
-            for (uint16_t v = 0; v < vertCount; v++) {
+#if defined(DEBUG) || defined(CAN_TRACE)
+        uint32_t tSlot0 = millis();
+        Serial.printf("[nav-render] >>> slot %d (tile %u,%u) featureCount=%u\n",
+                      slot, (unsigned)tile->tileX, (unsigned)tile->tileY, (unsigned)tile->featureCount);
+#endif
+        for (uint16_t i = 0; i < tile->featureCount; i++) {
+            NavFeature *f = &tile->features[i];
+
+            if (f->geomType == NAV_GEOM_TEXT || f->geomType == NAV_GEOM_POINT) {
+                lv_obj_t * obj = objs[i];
+                if (!obj) continue;
+                int16_t lx = (f->geomType == NAV_GEOM_TEXT) ? f->textX : f->vx[0];
+                int16_t ly = (f->geomType == NAV_GEOM_TEXT) ? f->textY : f->vy[0];
                 double lat, lon;
-                nav_tile_local_to_latlon(NAV_TILE_ZOOM, currentTile.tileX, currentTile.tileY, f->vx[v], f->vy[v], &lat, &lon);
+                nav_tile_local_to_latlon(NAV_TILE_ZOOM, tile->tileX, tile->tileY, lx, ly, &lat, &lon);
                 double metersNorth = (lat - curLat) * METERS_PER_DEG_LAT;
                 double metersEast  = (lon - curLon) * METERS_PER_DEG_LAT * cosLat;
-                tileFeaturePX[i][v] = (int)(cx + metersEast / METERS_PER_PIXEL);
-                tileFeaturePY[i][v] = (int)(cy - metersNorth / METERS_PER_PIXEL);
-            }
-
-            // NavFeature.colorRgb565 is already packed r5g6b5 (see
-            // nav_reader.h) - the exact same bit layout this sprite's
-            // rgb565_nonswapped buffer expects (see nav_map_render.cpp's
-            // header comment), so it's used directly here with no
-            // lv_color_t round-trip - unlike the theme background color
-            // above, which genuinely originates as an lv_color_t.
-            uint16_t color565 = f->colorRgb565;
-
-            if (f->geomType == NAV_GEOM_POLYGON) {
-                bool drawCasing = f->isCasingOrSpecial;
-                uint16_t casingColor = drawCasing ? nav_map_render_darken(f->colorRgb565, 0.35f) : 0;
-                nav_map_render_polygon(tileFeaturePX[i], tileFeaturePY[i], vertCount,
-                                        color565, f->ringCount, f->ringCount > 0 ? f->ringEnds : NULL,
-                                        drawCasing, casingColor);
+                lv_coord_t x = (lv_coord_t)(cx + metersEast / METERS_PER_PIXEL);
+                lv_coord_t y = (lv_coord_t)(cy - metersNorth / METERS_PER_PIXEL);
+                // Anchor at top-left rather than centering on the label/dot's
+                // own size - close enough for a first pass, avoids a
+                // lv_obj_get_size() round-trip per feature per fix.
+                lv_obj_set_pos(obj, x, y);
             } else {
-                uint8_t widthPx = f->widthPx / 2;  // widthPx is in 0.5px units (nav_tile_format.h)
-                if (widthPx == 0) widthPx = 1;
-                bool drawCasing = f->isCasingOrSpecial;
-                uint16_t casingColor = drawCasing ? nav_map_render_darken(f->colorRgb565, 0.3f) : 0;
-                uint8_t casingWidthPx = widthPx + 2;
-                nav_map_render_line(tileFeaturePX[i], tileFeaturePY[i], vertCount,
-                                     widthPx, color565, drawCasing, casingColor, casingWidthPx);
+                // Project every vertex (all rings, not just the outer one -
+                // nav_map_render_polygon() supports holes via ringEnds,
+                // unlike the lv_line approach this replaced) and hand off to
+                // the raster renderer.
+                uint16_t vertCount = f->vertexCount;
+                if (vertCount > NAV_MAX_VERTICES_PER_FEATURE) vertCount = NAV_MAX_VERTICES_PER_FEATURE;
+
+                for (uint16_t v = 0; v < vertCount; v++) {
+                    double lat, lon;
+                    nav_tile_local_to_latlon(NAV_TILE_ZOOM, tile->tileX, tile->tileY, f->vx[v], f->vy[v], &lat, &lon);
+                    double metersNorth = (lat - curLat) * METERS_PER_DEG_LAT;
+                    double metersEast  = (lon - curLon) * METERS_PER_DEG_LAT * cosLat;
+                    scratchPX[v] = (int)(cx + metersEast / METERS_PER_PIXEL);
+                    scratchPY[v] = (int)(cy - metersNorth / METERS_PER_PIXEL);
+                }
+
+                // NavFeature.colorRgb565 is already packed r5g6b5 (see
+                // nav_reader.h) - the exact same bit layout this sprite's
+                // rgb565_nonswapped buffer expects (see nav_map_render.cpp's
+                // header comment), so it's used directly here with no
+                // lv_color_t round-trip - unlike the theme background color
+                // above, which genuinely originates as an lv_color_t.
+                uint16_t color565 = f->colorRgb565;
+
+                if (f->geomType == NAV_GEOM_POLYGON) {
+                    bool drawCasing = f->isCasingOrSpecial;
+                    uint16_t casingColor = drawCasing ? nav_map_render_darken(f->colorRgb565, 0.35f) : 0;
+                    nav_map_render_polygon(scratchPX, scratchPY, vertCount,
+                                            color565, f->ringCount, f->ringCount > 0 ? f->ringEnds : NULL,
+                                            drawCasing, casingColor);
+                } else {
+                    uint8_t widthPx = f->widthPx / 2;  // widthPx is in 0.5px units (nav_tile_format.h)
+                    if (widthPx == 0) widthPx = 1;
+                    bool drawCasing = f->isCasingOrSpecial;
+                    uint16_t casingColor = drawCasing ? nav_map_render_darken(f->colorRgb565, 0.3f) : 0;
+                    uint8_t casingWidthPx = widthPx + 2;
+                    nav_map_render_line(scratchPX, scratchPY, vertCount,
+                                         widthPx, color565, drawCasing, casingColor, casingWidthPx);
+                }
             }
         }
+#if defined(DEBUG) || defined(CAN_TRACE)
+        Serial.printf("[nav-render] <<< slot %d done: %lums\n", slot, (unsigned long)(millis() - tSlot0));
+#endif
     }
 
     drawRouteLine(curLat, curLon, cosLat);
 
     nav_map_render_end_frame();
+#if defined(DEBUG) || defined(CAN_TRACE)
+    Serial.printf("[nav-timing] repositionTileLayer TOTAL: %lums\n", (unsigned long)(millis() - tRepoStart));
+#endif
 }
 
-// Loads whichever tile now covers (lat, lon), only when that's actually a
-// different tile than what's already loaded/built - SD reads only happen
-// on a tile crossing, not every fix. Rebuilding the LVGL objects happens
-// here too since the feature set (and therefore how many/what kind of
-// objects are needed) only changes when the tile does.
-// Does the actual blocking work (nav_tile_load() + rebuilding LVGL
-// objects) - see ui_navScreen_processPendingTileLoad()'s header comment
-// in ui_navScreen.h for why this must never be called from
-// ui_navScreen_addPoint()/slowUpdate()'s Ticker-callback context.
-static void loadTile(uint32_t tx, uint32_t ty, double lat, double lon) {
-    loadedTileX = tx;
-    loadedTileY = ty;
-    clearTileLayer();
+// Loads the whole NAV_GRID_TILES_X x NAV_GRID_TILES_Y grid of tiles
+// centered on (centerTx, centerTy), only when that's actually a different
+// center than what's already loaded/built - SD reads only happen on a
+// grid-crossing, not every fix. Rebuilding the LVGL objects happens here
+// too since the feature set (and therefore how many/what kind of objects
+// are needed) only changes when a tile does.
+// Does the actual blocking work (NAV_GRID_TILE_COUNT x nav_tile_load() +
+// rebuilding LVGL objects) - see ui_navScreen_processPendingTileLoad()'s
+// header comment in ui_navScreen.h for why this must never be called from
+// ui_navScreen_addPoint()/slowUpdate()'s Ticker-callback context. Costs
+// proportionally more than the single-tile load this replaced (up to
+// NAV_GRID_TILE_COUNT sequential nav_tile_load() calls, each already
+// individually measured at 100-800ms on real hardware) - still safe
+// (runs from loop(), a normal task) but a real, visible multi-second
+// touch-unresponsive hitch on every grid crossing is the accepted trade-
+// off for filling the screen - see NAV_GRID_TILES_X/Y's comment.
+static void loadGrid(uint32_t centerTx, uint32_t centerTy, double lat, double lon) {
+    gridCenterTileX = centerTx;
+    gridCenterTileY = centerTy;
+    clearGridFeatureObjs();
 
-    bool ok = nav_tile_load(NAV_TILE_ZOOM, tx, ty, &currentTile);
-    tileLoaded = ok;
-    if (ok) {
-        buildTileLayer();
-        if (ui_navScaleLabel) lv_label_set_text_fmt(ui_navScaleLabel, "~%.0fm across", CANVAS_W * METERS_PER_PIXEL);
+    const int halfX = NAV_GRID_TILES_X / 2;
+    const int halfY = NAV_GRID_TILES_Y / 2;
+    bool centerOk = false;
+
+#if defined(DEBUG) || defined(CAN_TRACE)
+    uint32_t tLoad0 = millis();
+#endif
+    for (int gy = 0; gy < NAV_GRID_TILES_Y; gy++) {
+        for (int gx = 0; gx < NAV_GRID_TILES_X; gx++) {
+            int slot = gy * NAV_GRID_TILES_X + gx;
+            uint32_t tx = (uint32_t)((int32_t)centerTx + (gx - halfX));
+            uint32_t ty = (uint32_t)((int32_t)centerTy + (gy - halfY));
+
+            // gridTiles[slot] is null if allocateNavBuffers() failed
+            // (PSRAM exhausted) - treat exactly like "no data for this
+            // tile" rather than crash.
+            bool ok = gridTiles[slot] && nav_tile_load(NAV_TILE_ZOOM, tx, ty, gridTiles[slot]);
+            gridSlotLoaded[slot] = ok;
+            if (ok) buildGridSlotLayer(slot);
+            if (gx == halfX && gy == halfY) centerOk = ok;  // the vehicle's own tile
+        }
+    }
+#if defined(DEBUG) || defined(CAN_TRACE)
+    Serial.printf("[nav-timing] loadGrid centered (%u,%u): %lums total for %d tiles\n",
+                  (unsigned)centerTx, (unsigned)centerTy, (unsigned long)(millis() - tLoad0), NAV_GRID_TILE_COUNT);
+#endif
+
+    gridLoaded = true;
+    if (centerOk) {
+        // Display-only imperial conversion (2026-09-22), same rule as
+        // formatDistance() above - CANVAS_W*METERS_PER_PIXEL itself stays
+        // meters, this is a fixed constant so always comfortably >528ft,
+        // always renders in miles.
+        if (ui_navScaleLabel) lv_label_set_text_fmt(ui_navScaleLabel, "~%.1fmi across", CANVAS_W * METERS_PER_PIXEL * 3.28084f / 5280.0f);
     } else if (ui_navScaleLabel) {
         // Styling pass item 16: was "~%.0fm across - no map tiles yet" -
         // exposed internal implementation detail ("tiles") to the driver,
         // and a scale distance is meaningless without a map rendered to
         // scale against, so dropped rather than kept alongside a caveat.
+        // Based on the CENTER slot only (the vehicle's own tile) - a
+        // neighbor slot failing (e.g. open water) is normal and doesn't
+        // mean "no map data here."
         lv_label_set_text(ui_navScaleLabel, ICON_LOCATION_ON " NO MAP DATA HERE");
     }
     // Reposition immediately against the fix that triggered this load,
     // rather than waiting for the next addPoint() (~1s away at typical
-    // GPS fix rates) to see the newly loaded tile's geometry.
+    // GPS fix rates) to see the newly loaded grid's geometry.
     repositionTileLayer(lat, lon, cos(lat * M_PI / 180.0));
 }
 
@@ -407,7 +602,7 @@ static void updateNavTile(double lat, double lon) {
     uint32_t tx, ty;
     nav_latlon_to_tile(NAV_TILE_ZOOM, lat, lon, &tx, &ty);
 
-    if (tileLoaded && tx == loadedTileX && ty == loadedTileY) return;
+    if (gridLoaded && tx == gridCenterTileX && ty == gridCenterTileY) return;
 
     tileLoadPending = true;
     pendingLat = lat;
@@ -420,26 +615,42 @@ void ui_navScreen_processPendingTileLoad(void) {
 
     // The screen may have been swiped away between the fix that queued
     // this load and this loop() iteration servicing it - ui_navTileLayer
-    // (the LVGL parent buildTileLayer() creates objects under) would be
-    // NULL, same "no work for a screen nobody has opened" convention as
-    // ui_navScreen_addPoint().
+    // (the LVGL parent buildGridSlotLayer() creates objects under) would
+    // be NULL, same "no work for a screen nobody has opened" convention
+    // as ui_navScreen_addPoint().
     if (!ui_navScreen) return;
 
     uint32_t tx, ty;
     nav_latlon_to_tile(NAV_TILE_ZOOM, pendingLat, pendingLon, &tx, &ty);
-    loadTile(tx, ty, pendingLat, pendingLon);
+    loadGrid(tx, ty, pendingLat, pendingLon);
 }
 
-// Flags a route computation toward HOME - never blocks here, see
-// ui_navScreen_processPendingRoute(). Called only from the Home button's
-// click handler (ui_event_navHomeBtn), not automatically on every fix -
-// see this file's header comment for why routing is button-triggered.
-static void requestRouteHome(double lat, double lon) {
+// Flags a route computation toward an arbitrary destination - never blocks
+// here, see ui_navScreen_processPendingRoute(). destLat/destLon come from
+// whichever row was tapped on the Destinations screen (Home/Work/nearest
+// charging station) via ui_navScreen_requestRoute(), not typed in here -
+// see this file's header comment for why routing is a fixed-destination-
+// picker, not general nav, and computes only on that tap, never
+// automatically.
+static void requestRouteTo(double lat, double lon, double destLat, double destLon) {
     if (routeComputing) return;  // already routing - ignore a double-tap
     routeComputing = true;
     routeComputePending = true;
     routeComputeLat = lat;
     routeComputeLon = lon;
+    routeDestLat = destLat;
+    routeDestLon = destLon;
+}
+
+// Public entry point - called from the Destinations screen's row-tap
+// handler (ui_destinationsScreen.cpp). Ignores the request with no visible
+// state change if there's no GPS fix yet (routing from (0,0) would be
+// meaningless) or a route is already being computed (requestRouteTo()
+// itself also guards this, but checking here too avoids even queuing a
+// redundant SD-bound request).
+void ui_navScreen_requestRoute(double destLat, double destLon) {
+    if (!gpsData.hasFix || routeComputing) return;
+    requestRouteTo(gpsData.latitude, gpsData.longitude, destLat, destLon);
 }
 
 void ui_navScreen_processPendingRoute(void) {
@@ -448,7 +659,7 @@ void ui_navScreen_processPendingRoute(void) {
     if (!ui_navScreen) { routeComputing = false; return; }  // screen closed before this got serviced
 
     RouterResult result = router.route((float)routeComputeLat, (float)routeComputeLon,
-                                        (float)HOME_LAT, (float)HOME_LON,
+                                        (float)routeDestLat, (float)routeDestLon,
                                         NAV_ROUTE_SPEED_KMH, navRoute);
     if (result == RouterResult::OK && !navRoute.empty()) {
         navTurns = nav_turn_detect(navRoute);
@@ -475,9 +686,16 @@ static const char* turnIconFor(TurnDirection dir) {
     }
 }
 
+// Display-only metric->imperial conversion (2026-09-22, matches this
+// project's mph speed-unit convention - CLAUDE.md/ui_speedScreen.h): the
+// distance math everywhere else in this file (calcDist(), route/turn
+// geometry) stays in meters, only this formatting step converts. Switches
+// to miles at 0.1mi (528ft), the same rough threshold turn-by-turn nav
+// UIs commonly use.
 static void formatDistance(char *buf, size_t bufSize, float meters) {
-    if (meters < 1000.0f) snprintf(buf, bufSize, "%.0f m", meters);
-    else snprintf(buf, bufSize, "%.1f km", meters / 1000.0f);
+    float feet = meters * 3.28084f;
+    if (feet < 528.0f) snprintf(buf, bufSize, "%.0f ft", feet);
+    else snprintf(buf, bufSize, "%.1f mi", feet / 5280.0f);
 }
 
 // Updates the turn banner and the bottom strip's ETA/distance-remaining -
@@ -487,7 +705,15 @@ static void updateTurnGuidance(double lat, double lon, float speedKph) {
 
     if (navRoute.empty()) {
         lv_label_set_text(ui_navTurnIconLabel, TURN_ICON_STRAIGHT);
-        lv_label_set_text(ui_navTurnDistLabel, routeComputing ? "ROUTING HOME..." : "PRESS HOME");
+        // "SELECT DESTINATION" (2026-09-22) overflowed this banner's fixed
+        // 220x72 box + 24px ExtraBold font - both were sized for "PRESS
+        // HOME" (10 chars) back when there was an on-screen button this
+        // text referred to. That button is gone now (swipe to Destinations
+        // is the only way there - see ui_event_navScreen()), so this
+        // banner goes back to being a short, neutral status readout rather
+        // than a call-to-action naming a control that isn't on this screen
+        // anymore - matches "OFF ROUTE" and "ROUTING" for length/tone.
+        lv_label_set_text(ui_navTurnDistLabel, routeComputing ? "ROUTING" : "NO ROUTE");
         if (ui_navEtaLabel) lv_label_set_text(ui_navEtaLabel, "ETA --:--");
         if (ui_navDistRemainingLabel) lv_label_set_text(ui_navDistRemainingLabel, "-- remaining");
         return;
@@ -520,8 +746,14 @@ static void updateTurnGuidance(double lat, double lon, float speedKph) {
             lv_label_set_text(ui_navEtaLabel, "ETA --:--");
         } else {
             float etaHours = (distRemaining / 1000.0f) / speedKph;
+            // Local-time display, same display-only utcOffsetHours shift as
+            // the splash/nav clocks (zombie_updaters.cpp) - gpsData.hour
+            // itself is untouched, this is a local copy for formatting only.
             int curHour = 0, curMinute = 0;
-            if (gpsData.hasFix) { curHour = gpsData.hour; curMinute = gpsData.minute; }
+            if (gpsData.hasFix) {
+                curHour = ((int)gpsData.hour + utcOffsetHours % 24 + 24) % 24;
+                curMinute = gpsData.minute;
+            }
             double totalMinutes = curHour * 60.0 + curMinute + etaHours * 60.0;
             int etaHour = ((int)(totalMinutes / 60.0)) % 24;
             int etaMinute = ((int)totalMinutes) % 60;
@@ -540,22 +772,18 @@ void ui_event_navScreen(lv_event_t * e)
         lv_indev_wait_release(lv_indev_get_act());
         _ui_screen_change(&ui_gpsScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_gpsScreen_screen_init);
         _ui_screen_delete(&ui_navScreen);
+    } else if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_LEFT) {
+        // Physical-RIGHT swipe to Destinations (2026-09-22) - restores the
+        // forward link this screen lost to Dyno LIVE in the styling/UX
+        // pass, now pointing at the new Destinations screen instead (Dyno
+        // LIVE is one swipe further from there, and still dock-reachable
+        // directly - see ui_destinationsScreen.h's header comment).
+        lv_indev_wait_release(lv_indev_get_act());
+        _ui_screen_change(&ui_destinationsScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_destinationsScreen_screen_init);
+        _ui_screen_delete(&ui_navScreen);
     }
-    // Physical-RIGHT swipe to Dyno LIVE REMOVED here - see this file's
-    // header comment (styling/UX pass Phase 5).
 }
 
-// The "phone home" button - the entire routing trigger for this screen
-// (see this file's header comment for why there's no destination-entry
-// UI). Ignores the tap with no visible state change if there's no GPS fix
-// yet (routing from (0,0) would be meaningless) or a route is already
-// being computed (requestRouteHome() itself also guards this, but
-// checking here too avoids even queuing a redundant SD-bound request).
-void ui_event_navHomeBtn(lv_event_t * e) {
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-    if (!gpsData.hasFix || routeComputing) return;
-    requestRouteHome(gpsData.latitude, gpsData.longitude);
-}
 
 // Recomputes every trail point's screen position relative to the CURRENT
 // fix (the most recently written point) and updates the line widget.
@@ -585,6 +813,9 @@ static void redrawTrail(void) {
     lv_line_set_points(ui_navTrailLine, trailScreenPoints, trailCount);
 }
 
+static bool repositionPending = false;  // see ui_navScreen_processPendingReposition()
+static double pendingRepoLat = 0, pendingRepoLon = 0;
+
 void ui_navScreen_addPoint(double lat, double lon) {
     if (!ui_navScreen) return;  // no work for a screen nobody has opened yet
 
@@ -596,10 +827,22 @@ void ui_navScreen_addPoint(double lat, double lon) {
     redrawTrail();
 
     // Map tile layer: flags a reload on a tile crossing but never blocks
-    // here - see updateNavTile()'s comment. Repositioning (cheap, no I/O)
-    // still happens every fix so the map stays centered like the trail.
+    // here - see updateNavTile()'s comment. repositionTileLayer() itself
+    // is ALSO now deferred (see ui_navScreen_processPendingReposition())
+    // - it used to be called directly from here on the (wrong, as of
+    // 2026-09-20) assumption that it was "cheap, no I/O". That was true
+    // back when a real tile only ever decoded 64 features; once real
+    // per-tile decoding/rendering was fixed to cover the true 174-1066
+    // features a real tile has, repositionTileLayer()'s raster-fill pass
+    // started taking 150-200+ms per call - confirmed on real hardware to
+    // trip the IDLE0 task watchdog (same "CPU 0: esp_timer" signature as
+    // the nav_tile_load()-from-Ticker bug this file's header already
+    // documents) when called from here, since ui_navScreen_addPoint()
+    // itself runs from slowUpdate()'s Ticker/esp_timer callback context.
     updateNavTile(lat, lon);
-    repositionTileLayer(lat, lon, cos(lat * M_PI / 180.0));
+    repositionPending = true;
+    pendingRepoLat = lat;
+    pendingRepoLon = lon;
 
     // Routing is button-triggered now (ui_event_navHomeBtn), not computed
     // automatically here - see this file's header comment. Turn guidance
@@ -607,8 +850,30 @@ void ui_navScreen_addPoint(double lat, double lon) {
     updateTurnGuidance(lat, lon, gpsData.speedKph);
 }
 
+// Services a pending reposition/render flagged by ui_navScreen_addPoint()
+// - see that function's comment for why this can't run from
+// slowUpdate()'s Ticker-callback context (same reasoning as
+// ui_navScreen_processPendingTileLoad()/ui_navScreen_processPendingRoute(),
+// just for the raster-render pass instead of SD I/O). Safe to call every
+// loop() iteration - cheap no-op when nothing's pending.
+void ui_navScreen_processPendingReposition(void) {
+    if (!repositionPending) return;
+    repositionPending = false;
+    if (!ui_navScreen) return;  // screen closed before this got serviced
+    repositionTileLayer(pendingRepoLat, pendingRepoLon, cos(pendingRepoLat * M_PI / 180.0));
+}
+
 void ui_navScreen_screen_init(void)
 {
+#if defined(DEBUG) || defined(CAN_TRACE)
+    uint32_t t0 = millis();
+#endif
+    allocateNavBuffers();  // no-op after the first successful call; see its comment
+#if defined(DEBUG) || defined(CAN_TRACE)
+    uint32_t t1 = millis();
+    Serial.printf("[nav-timing] allocateNavBuffers: %lums\n", (unsigned long)(t1 - t0));
+#endif
+
     ui_navScreen = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_navScreen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(ui_navScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -654,7 +919,13 @@ void ui_navScreen_screen_init(void)
     // via nav_map_render.h) - created FIRST so it's the bottommost child;
     // ui_navTileLayer's point/text objects and the trail/here-dot/turn
     // banner below all draw on top of it.
+#if defined(DEBUG) || defined(CAN_TRACE)
+    uint32_t tRenderInit0 = millis();
+#endif
     nav_map_render_init(ui_navCanvas, CANVAS_W, CANVAS_H);
+#if defined(DEBUG) || defined(CAN_TRACE)
+    Serial.printf("[nav-timing] nav_map_render_init: %lums\n", (unsigned long)(millis() - tRenderInit0));
+#endif
 
     // Point/text feature layer - created before the trail/here-dot below
     // so those still draw on top of it, same reasoning as before.
@@ -667,8 +938,11 @@ void ui_navScreen_screen_init(void)
     lv_obj_set_style_radius(ui_navTileLayer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(ui_navTileLayer, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_navTileLayer, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
-    for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) tileFeatureObjs[i] = NULL;
-    tileLoaded = false;
+    for (int s = 0; s < NAV_GRID_TILE_COUNT; s++) {
+        if (!gridFeatureObjs[s]) continue;
+        for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) gridFeatureObjs[s][i] = NULL;
+    }
+    gridLoaded = false;
 
     ui_navTrailLine = lv_line_create(ui_navCanvas);
     lv_obj_set_size(ui_navTrailLine, CANVAS_W, CANVAS_H);
@@ -698,45 +972,32 @@ void ui_navScreen_screen_init(void)
 
     ui_navScaleLabel = lv_label_create(ui_navCanvas);
     lv_obj_align(ui_navScaleLabel, LV_ALIGN_BOTTOM_LEFT, 12, -8);
-    // Styling pass item 16 (see loadTile()'s matching comment): no tile
+    // Styling pass item 16 (see loadGrid()'s matching comment): no tile
     // loaded yet at boot, so the honest default is "no map data" rather
     // than a scale figure with nothing to scale.
     lv_label_set_text(ui_navScaleLabel, ICON_LOCATION_ON " NO MAP DATA HERE");
     lv_obj_set_style_text_color(ui_navScaleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_navScaleLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // "Phone home" button - the sole routing trigger on this screen (see
-    // this file's header comment). Sized to this project's own vehicle-
-    // context touch-target minimum (CLAUDE.md's Settings section: ~80px/
-    // ~15mm for standard controls).
-    //
-    // Position history, both found via a decoded touch-event trace on
-    // real hardware (2026-09-18), not guessed:
-    // 1. Originally centered in the thin 32px top status bar - completely
-    //    unreachable; real taps landed 35-40px below the button itself.
-    // 2. Moved to the map canvas's top-RIGHT corner - also completely
-    //    unreachable, but for a different reason: taps in that screen
-    //    region produced NO touch event at all (not even bubbling to the
-    //    screen root), confirmed by repeated deliberate taps at the
-    //    confirmed-correct on-screen location - a real touch-panel
-    //    dead zone near that edge, not a widget/hit-testing bug.
-    // Landed here instead - horizontally centered (TOP_MID), directly
-    // below the turn banner - because a tap at this same horizontal
-    // center (~x=398, near vertical center of the top bar/canvas
-    // boundary) DID register correctly during the same trace. Reusing
-    // screen real estate already proven touch-responsive beats guessing
-    // at another untested corner.
-    ui_navHomeBtn = lv_btn_create(ui_navCanvas);
-    lv_obj_set_size(ui_navHomeBtn, 200, 84);
-    lv_obj_align(ui_navHomeBtn, LV_ALIGN_TOP_MID, 0, 92);
-    lv_obj_set_style_radius(ui_navHomeBtn, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_navHomeBtn, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    ui_navHomeBtnLabel = lv_label_create(ui_navHomeBtn);
-    lv_label_set_text(ui_navHomeBtnLabel, LV_SYMBOL_HOME "\nHOME");
-    lv_obj_set_style_text_align(ui_navHomeBtnLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_navHomeBtnLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_center(ui_navHomeBtnLabel);
-    lv_obj_add_event_cb(ui_navHomeBtn, ui_event_navHomeBtn, LV_EVENT_CLICKED, NULL);
+    // The on-canvas "Open Destinations" button (2026-09-22 addition, same
+    // day removed again per Rob: redundant once the physical-RIGHT swipe
+    // reaches ui_destinationsScreen directly - see ui_event_navScreen()) -
+    // no widget here now, swipe is the only way to Destinations from this
+    // screen. KEEPING the touch dead-zone finding below for whoever next
+    // places a widget in this screen region, found via a decoded touch-
+    // event trace on real hardware (2026-09-18), not guessed:
+    // 1. The thin 32px top status bar is completely unreachable; real taps
+    //    landed 35-40px below whatever's placed there.
+    // 2. The map canvas's top-RIGHT corner is also completely unreachable,
+    //    but for a different reason: taps in that screen region produced
+    //    NO touch event at all (not even bubbling to the screen root),
+    //    confirmed by repeated deliberate taps at the confirmed-correct
+    //    on-screen location - a real touch-panel dead zone near that edge,
+    //    not a widget/hit-testing bug.
+    // A tap at TOP_MID, ~y=92 (horizontally centered, directly below the
+    // turn banner, ~x=398 near the vertical center of the top bar/canvas
+    // boundary) DID register correctly during the same trace, if a future
+    // widget needs a proven-responsive spot here.
 
     // --- Turn-instruction banner, overlaid near the top of the map ---
     ui_navTurnBanner = lv_obj_create(ui_navCanvas);
@@ -758,11 +1019,11 @@ void ui_navScreen_screen_init(void)
 
     ui_navTurnDistLabel = lv_label_create(ui_navTurnBanner);
     lv_obj_align(ui_navTurnDistLabel, LV_ALIGN_RIGHT_MID, -4, 0);
-    // Styling pass item 16: init default now matches updateTurnGuidance()'s
-    // own no-route text ("PRESS HOME") instead of the stale "NO ROUTE" this
-    // was left showing until the first GPS fix triggered a real update -
-    // same string every other no-route state on this screen already uses.
-    lv_label_set_text(ui_navTurnDistLabel, "PRESS HOME");
+    // Init default matches updateTurnGuidance()'s own no-route text ("NO
+    // ROUTE" as of 2026-09-22 - see that function's comment on why it's
+    // no longer "PRESS HOME") instead of leaving this showing something
+    // stale until the first GPS fix triggers a real update.
+    lv_label_set_text(ui_navTurnDistLabel, "NO ROUTE");
     lv_obj_set_style_text_color(ui_navTurnDistLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_navTurnDistLabel, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -837,7 +1098,14 @@ void ui_navScreen_screen_init(void)
     // Child of the SCREEN, not the canvas (ui_navCanvas) - CANVAS_H was
     // shrunk above precisely so this dock sits below the canvas/strip, not
     // over them.
+#if defined(DEBUG) || defined(CAN_TRACE)
+    uint32_t tDock0 = millis();
+#endif
     ui_navScreenDock = ui_dock_create(ui_navScreen, UI_DOCK_GPS);
+#if defined(DEBUG) || defined(CAN_TRACE)
+    Serial.printf("[nav-timing] ui_dock_create: %lums, TOTAL screen_init: %lums\n",
+                  (unsigned long)(millis() - tDock0), (unsigned long)(millis() - t0));
+#endif
 
     lv_obj_add_event_cb(ui_navScreen, ui_event_navScreen, LV_EVENT_ALL, NULL);
 }
@@ -848,7 +1116,6 @@ void ui_navScreen_refresh_theme(void)
 
     lv_obj_set_style_bg_color(ui_navScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navTopBar) lv_obj_set_style_bg_color(ui_navTopBar, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (ui_navHomeBtn) lv_obj_set_style_bg_color(ui_navHomeBtn, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navCanvas) lv_obj_set_style_bg_color(ui_navCanvas, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navTrailLine) lv_obj_set_style_line_color(ui_navTrailLine, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (ui_navHereDot) {
@@ -920,8 +1187,14 @@ void ui_navScreen_screen_destroy(void)
     // Feature objects were just deleted along with ui_navTileLayer above -
     // drop the now-dangling pointers and force a fresh nav_tile_load() +
     // rebuild next time the screen is opened, even at the same position.
-    for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) tileFeatureObjs[i] = NULL;
-    tileLoaded = false;
+    // (gridTiles/gridFeatureObjs themselves are NOT freed here - see
+    // allocateNavBuffers()'s comment on why they're kept for the
+    // firmware's lifetime instead of torn down per screen visit.)
+    for (int s = 0; s < NAV_GRID_TILE_COUNT; s++) {
+        if (!gridFeatureObjs[s]) continue;
+        for (int i = 0; i < NAV_MAX_FEATURES_PER_TILE; i++) gridFeatureObjs[s][i] = NULL;
+    }
+    gridLoaded = false;
 
     // Drop any route - the Home button on next open starts fresh, same
     // "don't carry stale nav state across screen visits" reasoning as the
@@ -931,6 +1204,4 @@ void ui_navScreen_screen_destroy(void)
     navState = NavState{};
     routeComputePending = false;
     routeComputing = false;
-    ui_navHomeBtn = NULL;
-    ui_navHomeBtnLabel = NULL;
 }

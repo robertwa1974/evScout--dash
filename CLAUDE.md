@@ -12,9 +12,10 @@ PlatformIO. Full architecture and build-issue history: see
 `scout80-dash-architecture.md` and `waveshare-dash-build.md` in the repo
 root — read both before touching CAN/SDO code or the build config.
 
-Twelve screens: Splash/Clock (logo + UTC digital clock), Settings, Speed
+Thirteen screens: Splash/Clock (logo + UTC digital clock), Settings, Speed
 (home), Drive, Status, Battery, Charging, GPS (telemetry-only, see below),
-GPS NAV (breadcrumb trail, see below), 0-60/virtual dyno (LIVE + RESULTS).
+GPS NAV (breadcrumb trail, see below), Destinations (Home/Work/nearest
+charging station picker, see below), 0-60/virtual dyno (LIVE + RESULTS).
 GPS navigation as originally envisioned (full offline tile map) is still
 not built — GPS NAV's breadcrumb trail is the buildable-now stand-in for
 it, same relationship the telemetry-only GPS screen already has to that
@@ -23,15 +24,17 @@ telemetry-summary screen and a single BMS-detail screen; those two were
 split into four — Speed/Drive/Status/Battery — on 2026-09-14, and Charging
 + a telemetry-only GPS screen were added the same day, inserted into the
 chain between Battery and the dyno screens; Splash/Clock was built once a
-real Scout wordmark asset existed to put on it; GPS NAV was added last,
-between GPS and the dyno screens, once a mock GPS source made it possible
-to build and verify without a physical GPS module. See "Screen layout
-conventions" below and `waveshare-dash-build.md`'s milestone entries for
-why.)
+real Scout wordmark asset existed to put on it; GPS NAV was added between
+GPS and the dyno screens, once a mock GPS source made it possible to build
+and verify without a physical GPS module; Destinations was added last,
+2026-09-22, replacing GPS NAV's old single on-canvas "HOME" button once
+real GPS/IMU hardware bench-testing showed it was confusing and ate too
+much map-canvas real estate — see "Screen layout conventions" below and
+`waveshare-dash-build.md`'s milestone entries for why.)
 
 Current topology: `Splash/Clock <-> Settings <-> Speed(home) <-> Drive <->
-Status <-> Battery <-> Charging <-> GPS <-> GPS NAV <-> Dyno LIVE -> Dyno
-RESULTS`.
+Status <-> Battery <-> Charging <-> GPS <-> GPS NAV <-> Destinations <->
+Dyno LIVE -> Dyno RESULTS`.
 
 ## GPS data source (mock vs. real)
 
@@ -373,6 +376,25 @@ story). Key facts, so nobody re-derives them from scratch:
   this theme's near-black panel background — see `ui_theme.cpp`'s
   `panelBg` — a real bug the fixture had been masking since nothing had
   ever rendered it on-screen before).
+- **Destinations** (added 2026-09-22, `ui_destinationsScreen.{h,cpp}`):
+  full-width list of three tappable rows — Home, Work, Nearest Charging
+  Station — replacing GPS NAV's old single on-canvas "HOME" button once
+  real GPS/IMU hardware bench-testing showed the old button + turn-banner
+  combo was confusing and ate too much map-canvas real estate. Home/Work
+  are still hardcoded coordinate constants (no address-entry UI, ever —
+  same decision as the original single-destination design, just now with
+  more than one fixed destination). Nearest Charging Station is computed
+  by a linear-scan nearest-neighbor search (see `charging_stations.h`)
+  against an offline OpenChargeMap dataset for San Diego County (this
+  vehicle's operating region — same regional-scoping decision as the
+  statewide NAV tiles, generated once via `firmware/assets/
+  gen_charging_stations.py` and shipped to the SD card at
+  `/charging/stations.bin`, never a live API call from the vehicle — this
+  project has no internet connectivity on the dash). Tapping a row calls
+  `ui_navScreen_requestRoute()` (generalized from the old Home-only
+  `requestRouteHome()`) and swipes back to GPS NAV to show routing
+  progress on the turn banner, which now reads "SELECT DESTINATION"
+  instead of "PRESS HOME" while idle.
 - **Splash/clock** (built 2026-09-14, `ui_splashScreen.{h,c}`):
   deliberately simple — the real Scout wordmark (`img_scout_logo.c/.h`,
   converted from `firmware/assets/SCOUT.png` by `firmware/assets/
@@ -483,7 +505,7 @@ is physically a rightward swipe (confirmed working navigation prior to the
 settings → main → BMS → dyno LIVE; physical LEFT goes back — the split
 preserved this same convention across the current topology: splash/clock →
 settings → Speed (home) → Drive → Status → Battery → Charging → GPS →
-GPS NAV → dyno LIVE → dyno RESULTS). Each
+GPS NAV → Destinations → dyno LIVE → dyno RESULTS). Each
 screen's header comment states the *physical* direction, not
 the `LV_DIR_*` constant name, to avoid re-confusing this — read the code's
 `LV_DIR_LEFT`/`LV_DIR_RIGHT` checks with this inversion in mind, don't

@@ -19,21 +19,24 @@ extern "C" {
 // directly rather than adding wrapper boilerplate).
 //
 // Not the same screen as ui_gpsScreen (GPS telemetry grid, unchanged) -
-// this is a new 12th screen inserted into the topology between GPS and
-// Dyno LIVE: ... <-> GPS <-> GPS NAV <-> Dyno LIVE -> Dyno RESULTS.
+// this screen sits in the topology between GPS and Destinations: ... <->
+// GPS <-> GPS NAV <-> Destinations <-> Dyno LIVE -> Dyno RESULTS (the
+// Destinations screen, added 2026-09-22, took over this screen's old
+// direct link to Dyno LIVE - see ui_destinationsScreen.h).
 extern void ui_navScreen_screen_init(void);
 extern void ui_navScreen_screen_destroy(void);
 extern void ui_event_navScreen(lv_event_t * e);
 extern void ui_navScreen_refresh_theme(void);
 
-// The "phone home" button's click handler - the sole routing trigger on
-// this screen (see ui_navScreen.cpp's header comment: routing is a fixed,
-// hardcoded destination, not general nav, and computes only on this
-// button press, never automatically). Cheap to call from LVGL's own
-// input-handling context (already under uiMutex) - it only sets a
-// pending-flag; the actual blocking Router::route() call still happens
-// in ui_navScreen_processPendingRoute() from firmware.ino's loop().
-extern void ui_event_navHomeBtn(lv_event_t * e);
+// Public routing entry point - called from the Destinations screen's row-
+// tap handler with the coordinates of whichever destination (Home, Work,
+// nearest charging station) was tapped. Ignores the request with no
+// visible state change if there's no GPS fix yet or a route is already
+// being computed. Cheap to call from LVGL's own input-handling context
+// (already under uiMutex) - it only sets a pending-flag; the actual
+// blocking Router::route() call still happens in
+// ui_navScreen_processPendingRoute() from firmware.ino's loop().
+extern void ui_navScreen_requestRoute(double destLat, double destLon);
 
 // Appends the given fix to the trail history and redraws it, if the screen
 // has been created (no-op otherwise, matching this codebase's convention
@@ -57,6 +60,16 @@ extern void ui_event_navHomeBtn(lv_event_t * e);
 // only ever records which tile is needed; ui_navScreen_processPendingTileLoad()
 // does the actual blocking work, and must only ever be called from a
 // normal task (firmware.ino's loop(), not any Ticker/esp_timer callback).
+//
+// The same restriction applies to repositionTileLayer() as of 2026-09-20
+// (see ui_navScreen_processPendingReposition() below) - it was originally
+// assumed cheap ("pure math, no I/O") and called directly from here, which
+// was true only as long as a real tile's decode/render was still capped
+// at 64 features. Once that cap was fixed to cover a real tile's true
+// 174-1066 features, repositionTileLayer()'s raster-fill pass started
+// taking 150-200+ms per call - confirmed on real hardware to trip the
+// exact same IDLE0/esp_timer watchdog signature as the nav_tile_load()
+// issue above when left running directly from here.
 extern void ui_navScreen_addPoint(double lat, double lon);
 
 // Services a pending tile load recorded by ui_navScreen_addPoint(), if
@@ -65,6 +78,13 @@ extern void ui_navScreen_addPoint(double lat, double lon);
 // ui_navScreen_addPoint()'s comment for why this can't run from
 // slowUpdate()'s Ticker callback.
 extern void ui_navScreen_processPendingTileLoad(void);
+
+// Services a pending repositionTileLayer() (map recenter + raster render)
+// recorded by ui_navScreen_addPoint() - see that function's comment for
+// why. MUST be called only from a normal task context (firmware.ino's
+// loop()), never from slowUpdate()'s Ticker callback. Safe to call every
+// loop() iteration (cheap no-op when nothing's pending).
+extern void ui_navScreen_processPendingReposition(void);
 
 // Services a pending route computation (component 5) - Router::route()
 // does blocking SD I/O (ROUTE.bin header/index/page-cache reads), so like
