@@ -104,13 +104,28 @@ void ui_speedScreen_screen_init(void)
     lv_obj_set_style_border_width(ui_speedMeter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(ui_speedMeter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // TODO: 0-140 mph range is a placeholder - tune to your vehicle's actual
-    // top speed once known (same TODO as the other placeholder ranges in
-    // this codebase).
+    // 120 mph limit (2026-09-26, confirmed with Rob - replaces the earlier
+    // 0-140 placeholder). Major ticks every 20mph (0/20/40/60/80/100/120 -
+    // clean round numbers) with 3 minor ticks between each pair (5mph
+    // steps) - same convention as a real analog speedometer face (see
+    // firmware/assets/Tacho2.png, the reference style Rob pointed at):
+    // (120/5)+1 = 25 total tick positions, major every 4th one.
     speedScale = lv_meter_add_scale(ui_speedMeter);
-    lv_meter_set_scale_range(ui_speedMeter, speedScale, 0, 140, 270, 135);  // 270-degree sweep, gap at the bottom
-    lv_meter_set_scale_ticks(ui_speedMeter, speedScale, 21, 2, 12, ui_theme_text_secondary());
-    lv_meter_set_scale_major_ticks(ui_speedMeter, speedScale, 5, 3, 18, ui_theme_text_secondary(), 12);  // major tick every 5th minor -> labels at 0/35/70/105/140
+    lv_meter_set_scale_range(ui_speedMeter, speedScale, 0, 120, 270, 135);  // 270-degree sweep, gap at the bottom
+    lv_meter_set_scale_ticks(ui_speedMeter, speedScale, 25, 2, 12, ui_theme_text_primary());
+    lv_meter_set_scale_major_ticks(ui_speedMeter, speedScale, 4, 3, 18, ui_theme_text_primary(), 16);  // major every 4th minor tick -> labels at 0/20/40/60/80/100/120
+    // Root cause of "no reference numbers" (found 2026-09-26, never
+    // verified on real hardware before): lv_meter's auto-generated tick
+    // number labels render through the LV_PART_TICKS style part
+    // (lv_meter.c's draw pass), a SEPARATE part from LV_PART_MAIN - this
+    // screen never styled it, so the numbers were rendering in LVGL's tiny
+    // built-in theme font, easy to miss at a glance. Explicitly styled here
+    // with this project's own legible font, and bumped to text_primary
+    // (not _secondary) for higher contrast - matching the crisp white-on-
+    // black numerals in the Tacho2.png reference image, and reading better
+    // at a glance than the dimmer secondary tone.
+    lv_obj_set_style_text_font(ui_speedMeter, &font_montserrat_semibold_16, LV_PART_TICKS | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(ui_speedMeter, ui_theme_text_primary(), LV_PART_TICKS | LV_STATE_DEFAULT);
     ui_speedNeedle = lv_meter_add_needle_line(ui_speedMeter, speedScale, 5, ui_theme_accent(), -14);
     lv_meter_set_indicator_value(ui_speedMeter, ui_speedNeedle, 0);
 
@@ -174,8 +189,9 @@ void ui_speedScreen_refresh_theme(void)
     if (ui_speedMeter && speedScale) {
         // Re-invoke with the same geometry, new colors only - see the
         // speedScale comment at the top of this file.
-        lv_meter_set_scale_ticks(ui_speedMeter, speedScale, 21, 2, 12, ui_theme_text_secondary());
-        lv_meter_set_scale_major_ticks(ui_speedMeter, speedScale, 5, 3, 18, ui_theme_text_secondary(), 12);
+        lv_meter_set_scale_ticks(ui_speedMeter, speedScale, 25, 2, 12, ui_theme_text_primary());
+        lv_meter_set_scale_major_ticks(ui_speedMeter, speedScale, 4, 3, 18, ui_theme_text_primary(), 16);
+        lv_obj_set_style_text_color(ui_speedMeter, ui_theme_text_primary(), LV_PART_TICKS | LV_STATE_DEFAULT);
     }
     if (ui_speedNeedle) {
         ui_speedNeedle->type_data.needle_line.color = ui_theme_accent();

@@ -43,7 +43,22 @@ static lv_obj_t * menu = NULL;
 // Kept as statics (not screen_init() locals) so the contrast fix below -
 // see styleMenuSection()'s comment - can re-apply explicit colors from
 // refresh_theme() too, not just at creation time.
+//
+// Sub-page split (2026-09-26, design pass): this screen used to be one
+// shared lv_menu page holding all three sections stacked, requiring a lot
+// of scrolling to reach Display/Calibration. settingsPage is now the
+// TOP-LEVEL row list (Warning Thresholds / Display / Calibration, each a
+// tap target); thPage/dispPage/calPage are each section's own dedicated
+// page, reached via lv_menu_set_load_page_event() - LVGL's own back-button/
+// history mechanism (lv_menu_get_main_header_back_btn()) handles returning
+// to this list, no custom back-navigation code needed. rootSection is the
+// list's own lv_menu_section_create() (for styleMenuSection() theming,
+// same as the other three).
 static lv_obj_t * settingsPage = NULL;
+static lv_obj_t * rootSection = NULL;
+static lv_obj_t * thPage = NULL;
+static lv_obj_t * dispPage = NULL;
+static lv_obj_t * calPage = NULL;
 static lv_obj_t * thSection = NULL;
 static lv_obj_t * dispSection = NULL;
 static lv_obj_t * calSection = NULL;
@@ -87,8 +102,15 @@ static lv_obj_t * wifiConfigStatusLabel = NULL;
 // ui_dock.h. Settings is its own standalone dock group.
 static lv_obj_t * ui_settingsScreenDock = NULL;
 
-#define ROW_HEIGHT    100
-#define STEPPER_BTN   84
+// Shrunk 2026-09-26 (design pass - see waveshare-dash-build.md/CLAUDE.md's
+// note on this screen never having had one before): ROW_HEIGHT 100->88,
+// STEPPER_BTN 84->80 (CLAUDE.md's stated touch-target floor, not below it) -
+// the threshold rows read as visually lighter without dropping under the
+// safety-minimum tap size. Interaction model unchanged (+/- stepper, no
+// keypad) - CLAUDE.md documents that as a deliberate driving-safety choice,
+// not an oversight, so it stays even though the buttons are getting smaller.
+#define ROW_HEIGHT    88
+#define STEPPER_BTN   80
 
 // Shared by every +/- stepper button on this screen - only one can be held
 // at a time on a single-touch panel, so one counter is enough. Reset on
@@ -154,10 +176,13 @@ static lv_obj_t *createThresholdRow(lv_obj_t *section, const char *title,
     lv_obj_center(minusLabel);
 
     lv_obj_t *spinbox = lv_spinbox_create(cont);
-    // 150px, not 130 - room for the biggest case (packVLow: "280.0", 5
-    // glyphs) at the bumped-up 32px font (CLAUDE.md typography) plus the
-    // spinbox's own internal padding.
-    lv_obj_set_size(spinbox, 150, STEPPER_BTN);
+    // 130px @ 24px font (shrunk 2026-09-26, was 150px @ 32px) - still fits
+    // the biggest case (packVLow: "280.0", 5 glyphs) plus the spinbox's own
+    // internal padding, at CLAUDE.md's "standard value" font tier (one step
+    // down from hero-numeric) rather than the same size the primary
+    // telemetry hero numbers use elsewhere - appropriate for a secondary
+    // settings field.
+    lv_obj_set_size(spinbox, 130, STEPPER_BTN);
     lv_spinbox_set_range(spinbox, rangeMin, rangeMax);
     lv_spinbox_set_digit_format(spinbox, digitCount, decimalPos);
     lv_spinbox_set_rollover(spinbox, false);
@@ -165,7 +190,7 @@ static lv_obj_t *createThresholdRow(lv_obj_t *section, const char *title,
     lv_obj_clear_flag(spinbox, LV_OBJ_FLAG_CLICKABLE);  // display-only: +/- buttons drive it, never a keypad popup
     lv_obj_set_style_bg_color(spinbox, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(spinbox, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(spinbox, &font_montserrat_extrabold_32, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(spinbox, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_align(spinbox, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(spinbox, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -365,6 +390,25 @@ static void wifiConfigSwitchCb(lv_event_t *e) {
     updateWifiConfigStatusLabel();
 }
 
+// Root-list row: title + a trailing chevron, tap navigates into `target`
+// via LVGL's own lv_menu_set_load_page_event() (2026-09-26 sub-page split -
+// see the statics block above). Sized to ROW_HEIGHT like every other row on
+// this screen, comfortably above CLAUDE.md's 80px touch-target floor.
+static lv_obj_t *createNavRow(lv_obj_t *section, const char *title, lv_obj_t *target) {
+    lv_obj_t *row = lv_menu_cont_create(section);
+    lv_obj_set_height(row, ROW_HEIGHT);
+    lv_obj_t *label = lv_label_create(row);
+    lv_label_set_text(label, title);
+    lv_obj_set_style_text_color(label, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(label, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_flex_grow(label, 1);
+    lv_obj_t *chevron = lv_label_create(row);
+    lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
+    lv_obj_set_style_text_color(chevron, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_menu_set_load_page_event(menu, row, target);
+    return row;
+}
+
 void ui_settingsScreen_screen_init(void)
 {
     ui_settingsScreen = lv_obj_create(NULL);
@@ -379,21 +423,23 @@ void ui_settingsScreen_screen_init(void)
     // not a clipping risk the way the fixed-position screens elsewhere in
     // this codebase are.
     lv_obj_set_size(menu, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL) - UI_DOCK_H);
-    lv_menu_set_mode_root_back_btn(menu, LV_MENU_ROOT_BACK_BTN_DISABLED);  // physical swipe RIGHT goes back, no in-menu back button needed
+    // DISABLED is still correct here (2026-09-26 sub-page split) - this
+    // controls whether the back button shows AT THE ROOT list too (it
+    // wouldn't have anywhere useful to go); LVGL's own lv_menu already
+    // shows it automatically once you're two levels deep (inside
+    // thPage/dispPage/calPage, reached via lv_menu_set_load_page_event()
+    // below), which is exactly the behavior wanted - hidden at the list,
+    // visible once inside a section. Physical swipe RIGHT still exits the
+    // whole screen from any depth - see ui_event_settingsScreen().
+    lv_menu_set_mode_root_back_btn(menu, LV_MENU_ROOT_BACK_BTN_DISABLED);
     lv_obj_set_style_bg_color(menu, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    settingsPage = lv_menu_page_create(menu, NULL);
-    lv_obj_t *page = settingsPage;
-    lv_obj_set_style_pad_all(page, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(page, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    // --- Warning Thresholds page ---
+    thPage = lv_menu_page_create(menu, (char *)"Warning Thresholds");
+    lv_obj_set_style_pad_all(thPage, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(thPage, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // --- Section 1: Warning Thresholds ---
-    lv_obj_t *thHeader = lv_label_create(page);
-    lv_label_set_text(thHeader, "WARNING THRESHOLDS");
-    lv_obj_set_style_text_color(thHeader, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(thHeader, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    thSection = lv_menu_section_create(page);
+    thSection = lv_menu_section_create(thPage);
     socSpinbox = createThresholdRow(thSection, "Low SOC (%)", 0, 100, warningSet.lowSoc, 3, 0);
     motorTSpinbox = createThresholdRow(thSection, "High Motor Temp (\xC2\xB0" "C)", -40, 200, warningSet.motorTemp, 3, 0);
     heatsinkTSpinbox = createThresholdRow(thSection, "High Heatsink Temp (\xC2\xB0" "C)", 0, 150, warningSet.heatsinkTemp, 3, 0);
@@ -448,13 +494,12 @@ void ui_settingsScreen_screen_init(void)
     lv_obj_add_event_cb(saveBtn, saveBtnCb, LV_EVENT_ALL, NULL);
     updateSaveButtonState();  // starts disabled/dim - nothing dirty yet
 
-    // --- Section 2: Display ---
-    lv_obj_t *dispHeader = lv_label_create(page);
-    lv_label_set_text(dispHeader, "DISPLAY");
-    lv_obj_set_style_text_color(dispHeader, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(dispHeader, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+    // --- Display page ---
+    dispPage = lv_menu_page_create(menu, (char *)"Display");
+    lv_obj_set_style_pad_all(dispPage, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(dispPage, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    dispSection = lv_menu_section_create(page);
+    dispSection = lv_menu_section_create(dispPage);
 
     lv_obj_t *dayNightRow = lv_menu_cont_create(dispSection);
     lv_obj_set_height(dayNightRow, ROW_HEIGHT);
@@ -527,13 +572,12 @@ void ui_settingsScreen_screen_init(void)
     lv_obj_set_style_text_font(wifiConfigStatusLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
     updateWifiConfigStatusLabel();
 
-    // --- Section 3: Calibration ---
-    lv_obj_t *calHeader = lv_label_create(page);
-    lv_label_set_text(calHeader, "CALIBRATION");
-    lv_obj_set_style_text_color(calHeader, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(calHeader, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+    // --- Calibration page ---
+    calPage = lv_menu_page_create(menu, (char *)"Calibration");
+    lv_obj_set_style_pad_all(calPage, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(calPage, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    calSection = lv_menu_section_create(page);
+    calSection = lv_menu_section_create(calPage);
     lv_obj_t *calRow = lv_menu_cont_create(calSection);
     lv_obj_set_height(calRow, ROW_HEIGHT);
     lv_obj_t *calLabel = lv_label_create(calRow);
@@ -556,21 +600,93 @@ void ui_settingsScreen_screen_init(void)
     lv_label_set_text(calBtnLabel, "Not built yet");
     lv_obj_center(calBtnLabel);
 
-    fwRow = lv_menu_cont_create(page);
+    // --- Root list page (2026-09-26 sub-page split) ---
+    // What used to be the single shared page holding all three sections
+    // stacked - now just a short list of the three section names, each
+    // navigating into its own page above via createNavRow(). This is what
+    // eliminates the scrolling: each section's own page only holds ITS
+    // rows, not all three sections' worth at once.
+    settingsPage = lv_menu_page_create(menu, (char *)"Settings");
+    lv_obj_set_style_pad_all(settingsPage, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(settingsPage, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    rootSection = lv_menu_section_create(settingsPage);
+    createNavRow(rootSection, "Warning Thresholds", thPage);
+    createNavRow(rootSection, "Display", dispPage);
+    createNavRow(rootSection, "Calibration", calPage);
+
+    // Firmware version - global info, not section-specific, so it stays on
+    // the list itself rather than living inside any one section's page
+    // (unchanged from where it sat before the split, just relocated onto
+    // the new root page instead of the old shared one).
+    fwRow = lv_menu_cont_create(settingsPage);
     lv_obj_t *fwLabel = lv_label_create(fwRow);
     lv_label_set_text_fmt(fwLabel, "Firmware: %s", DASH_TAG);
     lv_obj_set_style_text_color(fwLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(fwLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // Explicit contrast-fix colors - see styleMenuSection()'s header comment
-    // for the root cause. fwRow sits directly on `page`, not inside any of
-    // the three sections above, so it needs its own styleMenuRow() call.
+    // for the root cause. fwRow sits directly on settingsPage, not inside
+    // rootSection, so it needs its own styleMenuRow() call.
+    styleMenuSection(rootSection);
     styleMenuSection(thSection);
     styleMenuSection(dispSection);
     styleMenuSection(calSection);
     styleMenuRow(fwRow);
 
-    lv_menu_set_page(menu, page);
+    lv_menu_set_page(menu, settingsPage);
+
+    // Back button touch-target size (2026-09-26) - lv_menu's own back
+    // button (shown automatically once inside thPage/dispPage/calPage,
+    // hidden at this root list - see the lv_menu_set_mode_root_back_btn()
+    // comment above) defaults to a small icon-sized hit area. Resized here
+    // to CLAUDE.md's 80px touch-target floor, same as every other control
+    // on this screen - this is new interaction surface on this screen, not
+    // present before the sub-page split.
+    // 2026-09-26, found on real hardware: styling just the header container
+    // (below) did NOT make the icon visible - lv_btn's own built-in LVGL
+    // theme applies a LOCAL text_color to the button itself, which blocks
+    // inheritance from an ancestor (local styles always win over inherited
+    // ones), and the icon (an lv_img with a LV_SYMBOL_LEFT source, drawn
+    // using text-style properties, not img_recolor) inherits FROM the
+    // button, not the header - so it rendered in LVGL's default (dark,
+    // meant for a light background) color, invisible against this
+    // project's own dark panel background. Same root cause this file's
+    // styleMenuRow()/styleMenuSection() already fixed once for row/section
+    // backgrounds; fixed here the same way - style the actual button and
+    // its icon child directly, not an ancestor, so there's no inheritance
+    // chain to get blocked.
+    lv_obj_t *menuBackBtn = lv_menu_get_main_header_back_btn(menu);
+    if (menuBackBtn) {
+        lv_obj_set_size(menuBackBtn, 80, 80);
+        lv_obj_set_style_bg_color(menuBackBtn, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(menuBackBtn, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_radius(menuBackBtn, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_t *backIcon = lv_obj_get_child(menuBackBtn, 0);
+        if (backIcon) {
+            lv_obj_center(backIcon);
+            lv_obj_set_style_text_color(backIcon, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_img_recolor_opa(backIcon, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_img_recolor(backIcon, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        }
+    }
+
+    // Header bar contrast fix (2026-09-26) - same root cause/fix as
+    // styleMenuRow()/styleMenuSection() above: this is more never-touched
+    // lv_menu stock chrome (the fixed title bar showing each page's title +
+    // the back button), which otherwise falls back to LVGL's built-in
+    // light theme. No per-object title-label getter exists in this LVGL
+    // version, so styled on the header CONTAINER instead - text color/font
+    // are inheritable LVGL style properties, so this cascades to the title
+    // label and back-button icon without needing to reach into lv_menu's
+    // internal child structure.
+    lv_obj_t *menuHeader = lv_menu_get_main_header(menu);
+    if (menuHeader) {
+        lv_obj_set_style_bg_color(menuHeader, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(menuHeader, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_color(menuHeader, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_text_font(menuHeader, &font_montserrat_extrabold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
 
     // Sibling of the menu, not a child of it - stays fixed at the bottom
     // regardless of the menu's own internal scroll position.
@@ -580,7 +696,10 @@ void ui_settingsScreen_screen_init(void)
     // page fills the whole screen and is a scroll target, so a swipe might
     // be delivered to the menu rather than bubbling to the screen object -
     // attaching to both guarantees the LEFT-swipe-back gesture is caught
-    // regardless of which object LVGL treats as the gesture's origin.
+    // regardless of which object LVGL treats as the gesture's origin. This
+    // exits the WHOLE Settings screen from any depth (root list or inside
+    // a section page) - distinct from the menu's own back button above,
+    // which only steps out of a section page back to this root list.
     lv_obj_add_event_cb(ui_settingsScreen, ui_event_settingsScreen, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(menu, ui_event_settingsScreen, LV_EVENT_ALL, NULL);
 }
@@ -614,11 +733,37 @@ void ui_settingsScreen_refresh_theme(void)
     if (wifiConfigStatusLabel) {
         lv_obj_set_style_text_color(wifiConfigStatusLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     }
-    if (settingsPage) lv_obj_set_style_bg_color(settingsPage, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    // Every sub-page's own background needs its own explicit recolor too
+    // (2026-09-26 sub-page split) - each is a separate lv_menu_page_create()
+    // result now, not one shared page.
+    lv_obj_t *pages[] = { settingsPage, thPage, dispPage, calPage };
+    for (int i = 0; i < 4; i++) {
+        if (pages[i]) lv_obj_set_style_bg_color(pages[i], ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+    styleMenuSection(rootSection);
     styleMenuSection(thSection);
     styleMenuSection(dispSection);
     styleMenuSection(calSection);
     styleMenuRow(fwRow);
+    if (menu) {
+        lv_obj_t *menuHeader = lv_menu_get_main_header(menu);
+        if (menuHeader) {
+            lv_obj_set_style_bg_color(menuHeader, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(menuHeader, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        }
+        // See the back-button styling comment in screen_init() - restyled
+        // directly here too, not just the header, for the same
+        // inheritance-blocked-by-lv_btn's-own-theme reason.
+        lv_obj_t *menuBackBtn = lv_menu_get_main_header_back_btn(menu);
+        if (menuBackBtn) {
+            lv_obj_set_style_bg_color(menuBackBtn, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_t *backIcon = lv_obj_get_child(menuBackBtn, 0);
+            if (backIcon) {
+                lv_obj_set_style_text_color(backIcon, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+                lv_obj_set_style_img_recolor(backIcon, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            }
+        }
+    }
     ui_dock_refresh_theme(ui_settingsScreenDock, UI_DOCK_SETTINGS);
     // Section header labels, row title labels, and the +/-/default/cal
     // button chrome are left as their creation-time colors here - this
@@ -635,6 +780,10 @@ void ui_settingsScreen_screen_destroy(void)
     ui_settingsScreen = NULL;
     menu = NULL;
     settingsPage = NULL;
+    rootSection = NULL;
+    thPage = NULL;
+    dispPage = NULL;
+    calPage = NULL;
     thSection = NULL;
     dispSection = NULL;
     calSection = NULL;
