@@ -9,6 +9,8 @@
 #include "charging_stations.h"
 #include "vehicle_config.h"
 #include "wifi_config_server.h"
+#include "data_logger.h"
+#include "odometer.h"
 
 // PlatformIO defines UNIT_TEST when building an on-device test (e.g.
 // test_nav_tile, which needs sd_driver.cpp/nav_reader.cpp linked in via
@@ -55,6 +57,9 @@ void setup(void) {
                         // must happen before any screen reading them is built
   wifi_config_server_init();  // loads the saved on/off pref and starts the AP
                                // if it was left on (see wifi_config_server.h)
+  odometer_init();     // saved odometer/trip from NVS - before ui_init() builds the home screen
+  data_logger_init();  // resumes CSV logging into a new file if it was left
+                        // on - needs sd_init() done first (data_logger.h)
   ui_theme_init();   // default (day) palette state
   getDisplayMode();  // load saved night/day pref from NVS, apply via ui_theme_set() -
                       // must happen before ui_init() below so the very first
@@ -140,6 +145,15 @@ void loop(void) {
   // No uiMutex needed: this only touches vehicle_config.h's globals and
   // WebServer's own state, never an LVGL object.
   wifi_config_server_poll();
+
+  // CSV logging to SD (data_logger.h) - snapshot + batched write, from this
+  // normal task only, never a Ticker (same SD-from-esp_timer watchdog
+  // lesson as the NAV tile loader above). No uiMutex: touches no LVGL object.
+  data_logger_poll();
+
+  // Odometer/trip integration + NVS saves (odometer.h) - same "normal task,
+  // never a Ticker" rule for flash writes. No uiMutex: no LVGL objects.
+  odometer_poll();
 
   vTaskDelay(pdMS_TO_TICKS(5));
 }

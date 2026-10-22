@@ -17,9 +17,18 @@
 //                                   continuous quantity
 //   (1,1) 404,165 Motor Mode     - text enum (MG1/MG2/MG1+MG2/BLEND,
 //                                   myData.motActive via PARAM_ID_MOT_ACTIVE)
-//   (0,2) 8,322   Regen Limit    - %, unsigned - lv_bar strip
-//   (1,2) 404,322 (spare)        - reserved for a future field, deliberately
-//                                   left empty per the approved 6th-slot plan
+//   (0,2) 8,322   Regen Limit    - %, VCU value -35..0 - lv_bar strip of
+//                                   the magnitude (0..35)
+//   (1,2) 404,322 Brake Regen    - same as Regen Limit (regenBrake, 2026-10-21 -
+//                                   filled the old spare slot)
+//
+// Editable (2026-10-21, matching Rob's Dial firmware): tapping Gear, Motor
+// Mode, Regen Limit or Brake Regen opens ui_param_editor.h's full-screen
+// editor - option buttons for the two enums, -/+ stepper (-35..0) for the
+// two regen values. Live SDO writes, not saved to VCU flash. Interlock per
+// sdo_client_write_allowed(): regen adjustable while driving, gear/motor
+// mode only when stopped. Titles carry LV_SYMBOL_EDIT so editable cards are
+// distinguishable from read-only ones.
 //
 // Widget choice follows CLAUDE.md: lv_bar for the linear-strip signed/
 // unsigned values, plain text for the two discrete enum states - never
@@ -39,6 +48,17 @@
 // ============================================================================
 
 #include "ui.h"
+#include "ui_param_editor.h"
+
+// Param IDs (zombie_updaters.h is C++-only, so repeated here).
+#define PID_GEAR        27
+#define PID_MOT_ACTIVE  129
+#define PID_REGENMAX    61
+#define PID_REGENBRAKE  122
+#define REGEN_MIN       (-35)   // Dial firmware's range for both regen params
+
+static const char *const GEAR_OPTIONS[4] = {"LOW", "HIGH", "AUTO", "HI FWD / LO REV"};
+static const char *const MOTOR_OPTIONS[4] = {"MG1 + MG2", "MG1 ONLY", "MG2 ONLY", "BLEND"};
 
 lv_obj_t * ui_driveScreen = NULL;
 
@@ -68,7 +88,11 @@ lv_obj_t * ui_driveRegenValLabel = NULL;
 lv_obj_t * ui_driveRegenUnitLabel = NULL;
 lv_obj_t * ui_driveRegenBar = NULL;
 
-lv_obj_t * ui_driveSparePanel = NULL;
+lv_obj_t * ui_driveBrakeRegenPanel = NULL;
+lv_obj_t * ui_driveBrakeRegenTitleLabel = NULL;
+lv_obj_t * ui_driveBrakeRegenValLabel = NULL;
+lv_obj_t * ui_driveBrakeRegenUnitLabel = NULL;
+lv_obj_t * ui_driveBrakeRegenBar = NULL;
 
 // Persistent bottom nav dock (styling/UX pass Phase 5, 2026-09-18) - see
 // ui_dock.h. Drive is inside the Telemetry group (home screen: Speed).
@@ -107,6 +131,25 @@ static lv_obj_t *createEnumValue(lv_obj_t *panel) {
     return val;
 }
 
+static void cardTapCb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    switch ((int)(intptr_t)lv_event_get_user_data(e)) {
+        case PID_GEAR:       ui_param_editor_open_choice("GEAR", PID_GEAR, GEAR_OPTIONS, 4); break;
+        case PID_MOT_ACTIVE: ui_param_editor_open_choice("MOTOR MODE", PID_MOT_ACTIVE, MOTOR_OPTIONS, 4); break;
+        case PID_REGENMAX:   ui_param_editor_open_stepper("REGEN LIMIT", PID_REGENMAX, REGEN_MIN, 0, "%"); break;
+        case PID_REGENBRAKE: ui_param_editor_open_stepper("BRAKE REGEN", PID_REGENBRAKE, REGEN_MIN, 0, "%"); break;
+    }
+}
+
+static void makeEditable(lv_obj_t *panel, int paramId) {
+    lv_obj_add_flag(panel, LV_OBJ_FLAG_CLICKABLE);
+    // Taps on the value label / bar must land on the card itself.
+    uint32_t n = lv_obj_get_child_cnt(panel);
+    for (uint32_t i = 0; i < n; i++) lv_obj_clear_flag(lv_obj_get_child(panel, i), LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(panel, cardTapCb, LV_EVENT_CLICKED, (void *)(intptr_t)paramId);
+    ui_press_feedback_attach(panel);
+}
+
 void ui_driveScreen_screen_init(void)
 {
     ui_driveScreen = lv_obj_create(NULL);
@@ -131,18 +174,24 @@ void ui_driveScreen_screen_init(void)
     // "GEAR" not "GEAR SELECTION" - label-shortening pass, 2026-09-14 (see
     // waveshare-dash-build.md) - terser is better for a glance-first
     // dashboard even where the longer text technically still fit.
-    ui_driveGearPanel = ui_card_createPanel(ui_driveScreen, GRID_GAP, GRID_GAP * 2 + GRID_PANEL_H, "GEAR", &ui_driveGearTitleLabel);
+    ui_driveGearPanel = ui_card_createPanel(ui_driveScreen, GRID_GAP, GRID_GAP * 2 + GRID_PANEL_H, "GEAR  " LV_SYMBOL_EDIT, &ui_driveGearTitleLabel);
     ui_driveGearValLabel = createEnumValue(ui_driveGearPanel);
 
-    ui_driveMotorModePanel = ui_card_createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 2 + GRID_PANEL_H, "MOTOR MODE", &ui_driveMotorModeTitleLabel);
+    ui_driveMotorModePanel = ui_card_createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 2 + GRID_PANEL_H, "MOTOR MODE  " LV_SYMBOL_EDIT, &ui_driveMotorModeTitleLabel);
     ui_driveMotorModeValLabel = createEnumValue(ui_driveMotorModePanel);
 
-    ui_driveRegenPanel = ui_card_createPanel(ui_driveScreen, GRID_GAP, GRID_GAP * 3 + GRID_PANEL_H * 2, "REGEN LIMIT", &ui_driveRegenTitleLabel);
+    ui_driveRegenPanel = ui_card_createPanel(ui_driveScreen, GRID_GAP, GRID_GAP * 3 + GRID_PANEL_H * 2, "REGEN LIMIT  " LV_SYMBOL_EDIT, &ui_driveRegenTitleLabel);
     ui_card_createValueAndUnit(ui_driveRegenPanel, &ui_driveRegenValLabel, &ui_driveRegenUnitLabel, "%");
-    ui_driveRegenBar = ui_card_createBar(ui_driveRegenPanel, false, 0, 100, 0);
+    ui_driveRegenBar = ui_card_createBar(ui_driveRegenPanel, false, 0, -REGEN_MIN, 0);
 
-    // Spare slot, deliberately empty - reserved for a future field.
-    ui_driveSparePanel = ui_card_createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 3 + GRID_PANEL_H * 2, "", NULL);
+    ui_driveBrakeRegenPanel = ui_card_createPanel(ui_driveScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP * 3 + GRID_PANEL_H * 2, "BRAKE REGEN  " LV_SYMBOL_EDIT, &ui_driveBrakeRegenTitleLabel);
+    ui_card_createValueAndUnit(ui_driveBrakeRegenPanel, &ui_driveBrakeRegenValLabel, &ui_driveBrakeRegenUnitLabel, "%");
+    ui_driveBrakeRegenBar = ui_card_createBar(ui_driveBrakeRegenPanel, false, 0, -REGEN_MIN, 0);
+
+    makeEditable(ui_driveGearPanel, PID_GEAR);
+    makeEditable(ui_driveMotorModePanel, PID_MOT_ACTIVE);
+    makeEditable(ui_driveRegenPanel, PID_REGENMAX);
+    makeEditable(ui_driveBrakeRegenPanel, PID_REGENBRAKE);
 
     ui_driveScreenDock = ui_dock_create(ui_driveScreen, UI_DOCK_TELEMETRY);
 
@@ -155,9 +204,9 @@ void ui_driveScreen_refresh_theme(void)
 
     lv_obj_set_style_bg_color(ui_driveScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    lv_obj_t *panels[] = { ui_drivePowerPanel, ui_driveCurrPanel, ui_driveGearPanel, ui_driveMotorModePanel, ui_driveRegenPanel, ui_driveSparePanel };
-    lv_obj_t *titles[] = { ui_drivePowerTitleLabel, ui_driveCurrTitleLabel, ui_driveGearTitleLabel, ui_driveMotorModeTitleLabel, ui_driveRegenTitleLabel, NULL };
-    lv_obj_t *units[]  = { ui_drivePowerUnitLabel, ui_driveCurrUnitLabel, NULL, NULL, ui_driveRegenUnitLabel, NULL };
+    lv_obj_t *panels[] = { ui_drivePowerPanel, ui_driveCurrPanel, ui_driveGearPanel, ui_driveMotorModePanel, ui_driveRegenPanel, ui_driveBrakeRegenPanel };
+    lv_obj_t *titles[] = { ui_drivePowerTitleLabel, ui_driveCurrTitleLabel, ui_driveGearTitleLabel, ui_driveMotorModeTitleLabel, ui_driveRegenTitleLabel, ui_driveBrakeRegenTitleLabel };
+    lv_obj_t *units[]  = { ui_drivePowerUnitLabel, ui_driveCurrUnitLabel, NULL, NULL, ui_driveRegenUnitLabel, ui_driveBrakeRegenUnitLabel };
     for (int i = 0; i < 6; i++) {
         if (panels[i]) {
             lv_obj_set_style_bg_color(panels[i], ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -166,8 +215,8 @@ void ui_driveScreen_refresh_theme(void)
         if (titles[i]) lv_obj_set_style_text_color(titles[i], ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
         if (units[i])  lv_obj_set_style_text_color(units[i], ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     }
-    lv_obj_t *bars[] = { ui_drivePowerBar, ui_driveCurrBar, ui_driveRegenBar };
-    for (int i = 0; i < 3; i++) {
+    lv_obj_t *bars[] = { ui_drivePowerBar, ui_driveCurrBar, ui_driveRegenBar, ui_driveBrakeRegenBar };
+    for (int i = 0; i < 4; i++) {
         if (!bars[i]) continue;
         lv_obj_set_style_bg_color(bars[i], ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_border_color(bars[i], ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -206,6 +255,10 @@ void ui_driveScreen_screen_destroy(void)
     ui_driveRegenValLabel = NULL;
     ui_driveRegenUnitLabel = NULL;
     ui_driveRegenBar = NULL;
-    ui_driveSparePanel = NULL;
+    ui_driveBrakeRegenPanel = NULL;
+    ui_driveBrakeRegenTitleLabel = NULL;
+    ui_driveBrakeRegenValLabel = NULL;
+    ui_driveBrakeRegenUnitLabel = NULL;
+    ui_driveBrakeRegenBar = NULL;
     ui_driveScreenDock = NULL;
 }

@@ -20,6 +20,7 @@ SemaphoreHandle_t sdMutex = xSemaphoreCreateMutex();
 #define SD_MOSI 11
 #define SD_CLK  12
 #define SD_MISO 13
+#define SD_FAST_HZ 20000000
 #define SD_SS   -1  // externally managed via the CH422G, not a GPIO the
                      // SD library should try to drive itself
 
@@ -35,7 +36,16 @@ bool sd_init(void) {
     SPI.setHwCs(false);
     SPI.begin(SD_CLK, SD_MISO, SD_MOSI, SD_SS);
 
-    sdReady = SD.begin(SD_SS);
+    // SPI clock (2026-10-21): SD.begin()'s default is 4MHz, which made the
+    // splash truck preload take ~11.5s (~380KB/s) and forced its playback
+    // down to 2.5fps. 20MHz is within the SD spec's 25MHz SPI-mode limit;
+    // if a particular card won't mount at that speed, fall back to the old
+    // default rather than leave the dash without its card.
+    sdReady = SD.begin(SD_SS, SPI, SD_FAST_HZ);
+    if (!sdReady) {
+        SD.end();
+        sdReady = SD.begin(SD_SS);
+    }
     if (!sdReady) {
         return false;  // no card inserted, or it failed to mount - not a
                         // crash, a dashboard can't assume a card is

@@ -1,76 +1,183 @@
 // ============================================================================
-// ui_speedScreen.c - HOME screen, full-screen speedometer (mph) + P/N/F/R
+// ui_speedScreen.c - HOME screen, twin-binnacle instrument cluster
 // ============================================================================
-// Hand-written (2026-09-14), replacing ui_mainScreen.c's quad-grid as the
-// HOME screen in the Speed/Drive/Status/Battery split (see
-// waveshare-dash-build.md for the discussion that led to this). No
-// SquareLine project for this screen (same situation as the other
-// hand-written screens in this repo).
+// Rebuilt 2026-10-21 (was a single centered 300px speedometer + P/N/F/R
+// pill). Layout concept from mianahm3d/webUI-STM_ESPCAR's "Mehran EV"
+// cluster - Rob liked it; only the arrangement was taken, not code (theirs
+// runs on sin() simulation with 10-14px fonts and 30px tap targets). Every
+// readout here is real VCU data or odometer.h.
 //
-// Full-screen lv_meter speedometer (needle + tick scale, per CLAUDE.md's
-// widget-selection rule) with the digital mph readout centered inside it,
-// and a P/N/F/R shifter-position pill below. Displayed speed is converted
-// to mph from myData.vehSpeedKph at the point of display only - the
-// underlying field stays in kph because the dyno screens (0-60 timing,
-// road-load power calc) depend on it; nothing upstream of this file changes
-// units.
+//   x 4..404            x 416..796
+//   +--------------+    [ P ][ R ][ N ][ D ]      y 4..76    shifter strip
+//   |  ODOMETER    |    +--------+ +--------+
+//   |  123.4 mi    |    |  SOC   | | MOTOR  |     y 84..254  needle gauges
+//   |     42       |    |  (/)   | |  (/)   |
+//   |    mph       |    +--------+ +--------+
+//   |  TRIP        |
+//   |  [ 4.6 mi ]  |    [ POWER ] [ PACK V ]      y 262..331 cards
+//   +--------------+    [ PACK A ] [ 12V   ]      y 339..408
+//   ===================== dock (72px) ===================== y 408..480
 //
-// Bound to myData in zombie_updaters.cpp's fastUpdate (same dirty-check,
-// dataMutex-then-uiMutex pattern as every other binding).
+// Widget rules (CLAUDE.md): speedometer and the two gauges are lv_meter
+// (needle + ticks), never sliders; nothing here is an input except the
+// trip box (long-press to reset, 170x80 - at the 80px touch floor). The
+// shifter strip is display-only - the VCU owns gear state.
 //
-// Navigation: physical swipe LEFT -> Drive screen (stays - Speed/Drive are
-// both in the dock's Telemetry group, so this intra-group link is kept).
-// The physical-RIGHT swipe to Settings is REMOVED (styling/UX pass Phase 5,
-// 2026-09-18) - Settings is its own dock-only destination now (cross-group
-// swipes are what the dock replaces; see ui_dock.h's mapping comment and
-// the plan's swipe-removal table). This board reports gesture direction
-// inverted from the physical swipe (see CLAUDE.md's "Touch gesture
-// direction" - raw tap position is confirmed correct, only the gesture-
-// direction label is flipped), so the code below checks LV_DIR_LEFT for
-// the physical-RIGHT swipe. Intentional; don't "fix" it without
-// re-verifying on hardware first.
+// Speed/dir are bound in zombie_updaters.cpp's fastUpdate, power/current in
+// midUpdate, the rest in slowUpdate - same dataMutex-then-uiMutex pattern
+// as every other screen, via the setters declared in ui_speedScreen.h.
+//
+// Navigation (unchanged): physical swipe LEFT -> Drive. This board reports
+// gesture direction inverted (CLAUDE.md "Touch gesture direction"), so the
+// code checks LV_DIR_LEFT. Intentional; don't "fix" it.
 // ============================================================================
 
 #include "ui.h"
+#include "odometer.h"
+#include "ui_can_freshness.h"
+#include <stdio.h>
+
+#define USABLE_H   (480 - UI_DOCK_H)   // 408
+#define DIAL_SIZE  400
+#define COL_X      416
+#define COL_W      380
+#define GAP        8
+
+#define STRIP_Y    4
+#define STRIP_H    72
+#define GAUGE_Y    (STRIP_Y + STRIP_H + GAP)        // 84
+#define GAUGE_H    170
+#define CARD_Y     (GAUGE_Y + GAUGE_H + GAP)        // 262
+#define CARD_H     ((USABLE_H - CARD_Y - GAP) / 2)  // 69
+#define HALF_W     ((COL_W - GAP) / 2)              // 186
+
+#define SOC_MAX    100
+#define TEMP_MAX   160
 
 lv_obj_t * ui_speedScreen = NULL;
-
-lv_obj_t * ui_speedTitleLabel = NULL;
 lv_obj_t * ui_speedMeter = NULL;
 lv_meter_indicator_t * ui_speedNeedle = NULL;
 lv_obj_t * ui_speedValLabel = NULL;
 lv_obj_t * ui_speedUnitLabel = NULL;
 
-lv_obj_t * ui_dirPill = NULL;
-lv_obj_t * ui_dirLabel = NULL;
-// Tracks the pill's current semantic state for refresh_theme() - see
-// ui_gpsScreen.c's identical pattern/comment for why.
-static ui_pill_state_t ui_dirPillState = UI_PILL_NEUTRAL;
-
-// Persistent bottom nav dock (styling/UX pass Phase 5, 2026-09-18) - see
-// ui_dock.h. Speed is the Telemetry group's home/canonical screen.
 static lv_obj_t * ui_speedScreenDock = NULL;
 
-// File-local, same reasoning as ui_mainScreen.c's old speedScale: lv_meter
-// has no simple style setter for tick color, only
-// lv_meter_set_scale_ticks()/_major_ticks(), so re-invoking those with the
-// same geometry and new colors is how ui_speedScreen_refresh_theme()
-// "restyles" the tick scale.
+// See the old file's note (kept): lv_meter has no style setter for tick
+// color, so refresh_theme() re-invokes the tick setters with new colors.
 static lv_meter_scale_t *speedScale = NULL;
+
+static lv_obj_t *odoCaption = NULL, *odoBox = NULL, *odoLabel = NULL;
+static lv_obj_t *tripBox = NULL, *tripCaption = NULL, *tripLabel = NULL;
+// Invisible long-press target over the TRIP caption + box (2026-10-21): the
+// visible box is only 40px tall to match the odometer's, below CLAUDE.md's
+// 80px touch floor, so the hit area is this separate 180x80 screen-level
+// object instead. Screen child, not a meter child, so nothing in the
+// meter's hierarchy can swallow the press.
+static lv_obj_t *tripHit = NULL;
+static lv_timer_t *tripFlashTimer = NULL;  // shows "RESET" for a moment after a reset
+
+#define READOUT_BOX_W 180   // odometer + trip boxes, identical
+#define READOUT_BOX_H 40
+static long shownOdoTenths = -1, shownTripTenths = -1;
+
+// P R N D strip - index order on screen, with the dirState each represents.
+static const char *GEAR_TEXT[4] = {"P", "R", "N", "D"};
+static const int GEAR_DIR[4] = {2, -1, 0, 1};
+static lv_obj_t *gearBox[4], *gearLabel[4];
+static int activeDir = 0;
+
+typedef struct {
+    lv_obj_t *panel, *title, *meter, *value;
+    lv_meter_scale_t *scale;
+    lv_meter_indicator_t *needle, *zone;
+} gauge_t;
+static gauge_t socGauge, tempGauge;
+
+typedef struct { lv_obj_t *panel, *title, *value; } card_t;
+static card_t powerCard, packVCard, packACard, auxCard;
+
+// --- Small builders ---------------------------------------------------------
+
+static lv_obj_t *createPanel(lv_obj_t *parent, lv_coord_t x, lv_coord_t y, lv_coord_t w, lv_coord_t h) {
+    lv_obj_t *p = lv_obj_create(parent);
+    lv_obj_set_pos(p, x, y);
+    lv_obj_set_size(p, w, h);
+    lv_obj_clear_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(p, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_pad_all(p, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(p, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(p, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(p, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(p, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    return p;
+}
+
+static lv_obj_t *createLabel(lv_obj_t *parent, const lv_font_t *font, lv_color_t color, const char *text) {
+    lv_obj_t *l = lv_label_create(parent);
+    lv_obj_set_style_text_font(l, font, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(l, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_label_set_text(l, text);
+    return l;
+}
+
+static void styleGaugeScale(gauge_t *g, int32_t max) {
+    lv_meter_set_scale_ticks(g->meter, g->scale, 11, 2, 8, ui_theme_text_secondary());
+    lv_meter_set_scale_range(g->meter, g->scale, 0, max, 240, 150);
+}
+
+static void createGauge(gauge_t *g, lv_coord_t x, const char *title, int32_t max, int32_t zoneStart, int32_t zoneEnd) {
+    g->panel = createPanel(ui_speedScreen, x, GAUGE_Y, HALF_W, GAUGE_H);
+    g->title = createLabel(g->panel, &font_montserrat_semibold_16, ui_theme_text_secondary(), title);
+    lv_obj_set_pos(g->title, 10, 6);
+
+    g->meter = lv_meter_create(g->panel);
+    lv_obj_set_size(g->meter, 140, 140);
+    lv_obj_align(g->meter, LV_ALIGN_TOP_MID, 0, 26);
+    lv_obj_clear_flag(g->meter, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(g->meter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(g->meter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(g->meter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    g->scale = lv_meter_add_scale(g->meter);
+    styleGaugeScale(g, max);
+    // Warning zone arc (low SOC / hot motor) - endpoints follow the Settings
+    // thresholds via ui_speedScreen_setThresholds().
+    g->zone = lv_meter_add_arc(g->meter, g->scale, 5, ui_theme_warning(), 0);
+    lv_meter_set_indicator_start_value(g->meter, g->zone, zoneStart);
+    lv_meter_set_indicator_end_value(g->meter, g->zone, zoneEnd);
+    g->needle = lv_meter_add_needle_line(g->meter, g->scale, 4, ui_theme_accent(), -10);
+    lv_meter_set_indicator_value(g->meter, g->needle, 0);
+
+    // Below the pivot, inside the 240-degree sweep's open bottom.
+    g->value = createLabel(g->meter, &font_montserrat_extrabold_24, ui_theme_dim(), "--");
+    lv_obj_align(g->value, LV_ALIGN_CENTER, 0, 40);
+}
+
+static void createCard(card_t *c, lv_coord_t x, lv_coord_t y, const char *title) {
+    c->panel = createPanel(ui_speedScreen, x, y, HALF_W, CARD_H);
+    c->title = createLabel(c->panel, &font_montserrat_semibold_16, ui_theme_text_secondary(), title);
+    lv_obj_set_pos(c->title, 10, 6);
+    c->value = createLabel(c->panel, &font_montserrat_extrabold_24, ui_theme_dim(), "--");
+    lv_obj_align(c->value, LV_ALIGN_BOTTOM_RIGHT, -10, -6);
+}
+
+static void setCardValue(card_t *c, const char *text, lv_color_t color) {
+    if (!c->value) return;
+    lv_label_set_text(c->value, text);
+    lv_obj_set_style_text_color(c->value, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+}
+
+// --- Events -----------------------------------------------------------------
 
 void ui_event_speedScreen(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
 
-    // Physical-RIGHT swipe to Settings REMOVED here - see this file's
-    // header comment (styling/UX pass Phase 5).
     if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_LEFT) {
         lv_indev_wait_release(lv_indev_get_act());
         _ui_screen_change(&ui_driveScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_driveScreen_screen_init);
         _ui_screen_delete(&ui_speedScreen);
     }
-    // Brightness gesture (CLAUDE.md: "keep uaDASH's existing swipe-up/down
-    // brightness gesture working alongside" day/night). No screen change.
+    // Brightness gesture (CLAUDE.md: keep uaDASH's swipe-up/down brightness).
     if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_TOP) {
         upBrightness(e);
     }
@@ -79,6 +186,53 @@ void ui_event_speedScreen(lv_event_t * e)
     }
 }
 
+static void tripFlashDoneCb(lv_timer_t *t) {
+    LV_UNUSED(t);
+    tripFlashTimer = NULL;  // one-shot (repeat count 1) - LVGL deletes it after this call
+    if (!tripLabel) return;
+    lv_obj_set_style_text_color(tripLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    shownTripTenths = -1;   // force the real value back on
+    ui_speedScreen_refreshOdometer();
+}
+
+// Long-press, not tap: a reset shouldn't happen from a brush while driving.
+// Pressed state outlines the box in the accent color; a completed reset
+// flashes "RESET" for a second - visible even when the trip was already
+// 0.0 (Rob's bench test found the old version gave no sign it had worked).
+static void tripHitCb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) {
+        lv_obj_set_style_border_color(tripBox, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(tripBox, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        lv_obj_set_style_border_color(tripBox, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(tripBox, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    } else if (code == LV_EVENT_LONG_PRESSED) {
+        odometer_reset_trip();
+        lv_label_set_text(tripLabel, "RESET");
+        lv_obj_set_style_text_color(tripLabel, ui_theme_accent(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        if (tripFlashTimer) lv_timer_del(tripFlashTimer);
+        tripFlashTimer = lv_timer_create(tripFlashDoneCb, 1000, NULL);
+        lv_timer_set_repeat_count(tripFlashTimer, 1);
+    }
+}
+
+static lv_obj_t *createReadoutBox(lv_coord_t yFromCenter) {
+    lv_obj_t *box = lv_obj_create(ui_speedMeter);
+    lv_obj_set_size(box, READOUT_BOX_W, READOUT_BOX_H);
+    lv_obj_align(box, LV_ALIGN_CENTER, 0, yFromCenter);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_pad_all(box, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(box, 6, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(box, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(box, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(box, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    return box;
+}
+
+// --- Screen -----------------------------------------------------------------
+
 void ui_speedScreen_screen_init(void)
 {
     ui_speedScreen = lv_obj_create(NULL);
@@ -86,96 +240,214 @@ void ui_speedScreen_screen_init(void)
     lv_obj_set_style_bg_color(ui_speedScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_speedScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_speedTitleLabel = lv_label_create(ui_speedScreen);
-    lv_obj_set_pos(ui_speedTitleLabel, 12, 8);
-    lv_label_set_text(ui_speedTitleLabel, "SPEED");
-    lv_obj_set_style_text_color(ui_speedTitleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_speedTitleLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    // --- Full-screen speedometer, needle + tick scale ---
-    // 300x300 and moved up (was 360x360 @ y=40) - shrunk to leave room for
-    // the P/N/F/R pill above the new 72px bottom nav dock (styling/UX pass
-    // Phase 5, 2026-09-18) without either overlapping the dock's own zone.
+    // --- Left: speedometer -------------------------------------------------
     ui_speedMeter = lv_meter_create(ui_speedScreen);
-    lv_obj_set_size(ui_speedMeter, 300, 300);
-    lv_obj_align(ui_speedMeter, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_set_size(ui_speedMeter, DIAL_SIZE, DIAL_SIZE);
+    lv_obj_set_pos(ui_speedMeter, 4, (USABLE_H - DIAL_SIZE) / 2);
     lv_obj_clear_flag(ui_speedMeter, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_opa(ui_speedMeter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(ui_speedMeter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(ui_speedMeter, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // 120 mph limit (2026-09-26, confirmed with Rob - replaces the earlier
-    // 0-140 placeholder). Major ticks every 20mph (0/20/40/60/80/100/120 -
-    // clean round numbers) with 3 minor ticks between each pair (5mph
-    // steps) - same convention as a real analog speedometer face (see
-    // firmware/assets/Tacho2.png, the reference style Rob pointed at):
-    // (120/5)+1 = 25 total tick positions, major every 4th one.
+    // 0-120 mph (confirmed with Rob 2026-09-26), majors every 20, minors
+    // every 5 - unchanged from the previous screen.
     speedScale = lv_meter_add_scale(ui_speedMeter);
-    lv_meter_set_scale_range(ui_speedMeter, speedScale, 0, 120, 270, 135);  // 270-degree sweep, gap at the bottom
+    lv_meter_set_scale_range(ui_speedMeter, speedScale, 0, 120, 270, 135);
     lv_meter_set_scale_ticks(ui_speedMeter, speedScale, 25, 2, 12, ui_theme_text_primary());
-    lv_meter_set_scale_major_ticks(ui_speedMeter, speedScale, 4, 3, 18, ui_theme_text_primary(), 16);  // major every 4th minor tick -> labels at 0/20/40/60/80/100/120
-    // Root cause of "no reference numbers" (found 2026-09-26, never
-    // verified on real hardware before): lv_meter's auto-generated tick
-    // number labels render through the LV_PART_TICKS style part
-    // (lv_meter.c's draw pass), a SEPARATE part from LV_PART_MAIN - this
-    // screen never styled it, so the numbers were rendering in LVGL's tiny
-    // built-in theme font, easy to miss at a glance. Explicitly styled here
-    // with this project's own legible font, and bumped to text_primary
-    // (not _secondary) for higher contrast - matching the crisp white-on-
-    // black numerals in the Tacho2.png reference image, and reading better
-    // at a glance than the dimmer secondary tone.
+    lv_meter_set_scale_major_ticks(ui_speedMeter, speedScale, 4, 3, 18, ui_theme_text_primary(), 16);
+    // Tick numbers render via LV_PART_TICKS, not MAIN - see git history of
+    // this file for the "no reference numbers" bug this fixed.
     lv_obj_set_style_text_font(ui_speedMeter, &font_montserrat_semibold_16, LV_PART_TICKS | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(ui_speedMeter, ui_theme_text_primary(), LV_PART_TICKS | LV_STATE_DEFAULT);
     ui_speedNeedle = lv_meter_add_needle_line(ui_speedMeter, speedScale, 5, ui_theme_accent(), -14);
     lv_meter_set_indicator_value(ui_speedMeter, ui_speedNeedle, 0);
 
-    // Digital readout, centered inside the meter face.
-    ui_speedValLabel = lv_label_create(ui_speedMeter);
-    lv_obj_align(ui_speedValLabel, LV_ALIGN_CENTER, 0, 8);
-    lv_label_set_text(ui_speedValLabel, "0");
-    lv_obj_set_style_text_color(ui_speedValLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_speedValLabel, &font_montserrat_extrabold_48, LV_PART_MAIN | LV_STATE_DEFAULT);
+    odoCaption = createLabel(ui_speedMeter, &font_montserrat_semibold_16, ui_theme_text_secondary(), "ODOMETER");
+    lv_obj_align(odoCaption, LV_ALIGN_CENTER, 0, -112);
+    odoBox = createReadoutBox(-78);
+    odoLabel = createLabel(odoBox, &font_montserrat_extrabold_24, ui_theme_text_primary(), "0.0 mi");
+    lv_obj_center(odoLabel);
 
-    ui_speedUnitLabel = lv_label_create(ui_speedMeter);
-    lv_obj_align(ui_speedUnitLabel, LV_ALIGN_CENTER, 0, 58);
-    lv_label_set_text(ui_speedUnitLabel, "mph");
-    lv_obj_set_style_text_color(ui_speedUnitLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_speedUnitLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_speedValLabel = createLabel(ui_speedMeter, &font_montserrat_extrabold_48, ui_theme_text_primary(), "0");
+    lv_obj_align(ui_speedValLabel, LV_ALIGN_CENTER, 0, 4);
+    ui_speedUnitLabel = createLabel(ui_speedMeter, &font_montserrat_semibold_16, ui_theme_text_secondary(), "mph");
+    lv_obj_align(ui_speedUnitLabel, LV_ALIGN_CENTER, 0, 48);
 
-    // --- P/N/F/R shifter-position pill, below the meter ---
-    // Styling pass: migrated onto ui_status_pill.h's shared pill (was a
-    // hand-built lv_obj with no fade transition at all - one of the 2 of
-    // 5 pills that previously snapped instantly, see that header's
-    // rationale). Single-character text stays ExtraBold-32 - the 24px
-    // font-weight audit doesn't apply at this size (see convert_font.py:
-    // no SemiBold-32 exists, nothing at 32/48px is ever a label).
-    // 56px tall @ y=348 (was 64px @ y=408) - shrunk/moved up alongside the
-    // meter above so the bottom edge (348+56=404) clears the new 72px
-    // bottom nav dock (dock zone starts at y=408) with a small margin.
-    ui_dirPill = ui_pill_create(ui_speedScreen, 160, 56, 28, &ui_dirLabel, &font_montserrat_extrabold_32);
-    lv_obj_align(ui_dirPill, LV_ALIGN_TOP_MID, 0, 348);
-    ui_pill_setState(ui_dirPill, ui_dirLabel, UI_PILL_NEUTRAL, "N");
+    // TRIP mirrors ODOMETER exactly (Rob, 2026-10-21): caption above, box
+    // around the value only - same 34px caption-to-box spacing.
+    tripCaption = createLabel(ui_speedMeter, &font_montserrat_semibold_16, ui_theme_text_secondary(), "TRIP");
+    lv_obj_align(tripCaption, LV_ALIGN_CENTER, 0, 92);
+    tripBox = createReadoutBox(126);
+    tripLabel = createLabel(tripBox, &font_montserrat_extrabold_24, ui_theme_text_primary(), "0.0 mi");
+    lv_obj_center(tripLabel);
+
+    // Covers caption + box: meter center is at (4 + DIAL_SIZE/2, meterY +
+    // DIAL_SIZE/2); caption top ~+84, box bottom +146 -> an 80px-tall area
+    // from +76. Created after the meter so it sits on top of it.
+    tripHit = lv_obj_create(ui_speedScreen);
+    lv_obj_remove_style_all(tripHit);
+    lv_obj_set_size(tripHit, READOUT_BOX_W, 80);
+    lv_obj_set_pos(tripHit, 4 + DIAL_SIZE / 2 - READOUT_BOX_W / 2, (USABLE_H - DIAL_SIZE) / 2 + DIAL_SIZE / 2 + 76);
+    lv_obj_add_flag(tripHit, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(tripHit, tripHitCb, LV_EVENT_ALL, NULL);
+
+    // --- Right: P R N D strip ------------------------------------------------
+    lv_coord_t gearW = (COL_W - 3 * GAP) / 4;
+    for (int i = 0; i < 4; i++) {
+        gearBox[i] = createPanel(ui_speedScreen, COL_X + i * (gearW + GAP), STRIP_Y, gearW, STRIP_H);
+        gearLabel[i] = createLabel(gearBox[i], &font_montserrat_extrabold_32, ui_theme_dim(), GEAR_TEXT[i]);
+        lv_obj_center(gearLabel[i]);
+    }
+
+    // --- Right: SOC + motor temp gauges ------------------------------------
+    createGauge(&socGauge, COL_X, "SOC  %", SOC_MAX, 0, 15);
+    createGauge(&tempGauge, COL_X + HALF_W + GAP, "MOTOR  \xC2\xB0" "C", TEMP_MAX, 140, TEMP_MAX);
+
+    // --- Right: cards ---------------------------------------------------------
+    createCard(&powerCard, COL_X, CARD_Y, "POWER");
+    createCard(&packVCard, COL_X + HALF_W + GAP, CARD_Y, "PACK V");
+    createCard(&packACard, COL_X, CARD_Y + CARD_H + GAP, "PACK A");
+    createCard(&auxCard, COL_X + HALF_W + GAP, CARD_Y + CARD_H + GAP, "12V AUX");
+
+    shownOdoTenths = shownTripTenths = -1;
+    ui_speedScreen_refreshOdometer();
+    ui_speedScreen_setDirState(0);
 
     ui_speedScreenDock = ui_dock_create(ui_speedScreen, UI_DOCK_TELEMETRY);
 
     lv_obj_add_event_cb(ui_speedScreen, ui_event_speedScreen, LV_EVENT_ALL, NULL);
 }
 
+// --- Setters ----------------------------------------------------------------
+
+static void styleGearBox(int i) {
+    bool active = (GEAR_DIR[i] == activeDir);
+    lv_color_t bg = ui_theme_panel_bg(), fg = ui_theme_dim(), border = ui_theme_panel_border();
+    if (active) {
+        // Same semantics as the old P/N/F/R pill (ui_status_pill.h): F green,
+        // R amber caution, P/N neutral - neutral shown as an accent outline
+        // so the active letter still stands out.
+        if (activeDir == 1)       { bg = ui_theme_good(); fg = ui_theme_bg(); border = bg; }
+        else if (activeDir == -1) { bg = ui_theme_bad();  fg = ui_theme_bg(); border = bg; }
+        else                      { fg = ui_theme_text_primary(); border = ui_theme_accent(); }
+    }
+    lv_obj_set_style_bg_color(gearBox[i], bg, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(gearBox[i], border, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(gearBox[i], active ? 3 : 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(gearLabel[i], fg, LV_PART_MAIN | LV_STATE_DEFAULT);
+}
+
 void ui_speedScreen_setDirState(int dirState)
 {
-    if (ui_dirPill == NULL || ui_dirLabel == NULL) return;
+    if (ui_speedScreen == NULL) return;
+    activeDir = (dirState >= -1 && dirState <= 2) ? dirState : 0;
+    for (int i = 0; i < 4; i++) styleGearBox(i);
+}
 
-    // -1=Reverse, 0=Neutral, 1=Drive ("F"orward per the P/N/F/R naming this
-    // was requested with), 2=Park - see PARAM_ID_DIR in zombie_updaters.h.
-    const char *text;
-    switch (dirState) {
-        case -1: text = "R"; ui_dirPillState = UI_PILL_CAUTION; break;
-        case  1: text = "F"; ui_dirPillState = UI_PILL_ACTIVE;  break;
-        case  2: text = "P"; ui_dirPillState = UI_PILL_NEUTRAL; break;
-        case  0:
-        default: text = "N"; ui_dirPillState = UI_PILL_NEUTRAL; break;
+static void setGauge(gauge_t *g, int32_t needle, const char *text, lv_color_t color) {
+    if (!g->meter) return;
+    lv_meter_set_indicator_value(g->meter, g->needle, needle);
+    lv_label_set_text(g->value, text);
+    lv_obj_set_style_text_color(g->value, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+}
+
+void ui_speedScreen_setSoc(int soc, bool warn, bool noData)
+{
+    if (ui_speedScreen == NULL) return;
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d%%", soc);
+    int32_t n = soc < 0 ? 0 : (soc > SOC_MAX ? SOC_MAX : soc);
+    setGauge(&socGauge, n, buf, noData ? ui_theme_dim() : (warn ? ui_theme_warning() : ui_theme_text_primary()));
+}
+
+void ui_speedScreen_setMotorTemp(int tempC, bool warn)
+{
+    if (ui_speedScreen == NULL) return;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d\xC2\xB0" "C", tempC);
+    int32_t n = tempC < 0 ? 0 : (tempC > TEMP_MAX ? TEMP_MAX : tempC);
+    bool noData = !ui_can_freshness_hasEverReceived();
+    setGauge(&tempGauge, n, buf, noData ? ui_theme_dim() : (warn ? ui_theme_warning() : ui_theme_text_primary()));
+}
+
+void ui_speedScreen_setThresholds(int lowSoc, int motorTempWarn)
+{
+    if (ui_speedScreen == NULL) return;
+    lv_meter_set_indicator_end_value(socGauge.meter, socGauge.zone, lowSoc);
+    lv_meter_set_indicator_start_value(tempGauge.meter, tempGauge.zone, motorTempWarn);
+}
+
+void ui_speedScreen_setPackVoltage(float volts, bool warn, bool noData)
+{
+    if (ui_speedScreen == NULL) return;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1f V", volts);
+    setCardValue(&packVCard, buf, noData ? ui_theme_dim() : (warn ? ui_theme_warning() : ui_theme_text_primary()));
+}
+
+static lv_color_t liveColor(void) {
+    return ui_can_freshness_hasEverReceived() ? ui_theme_text_primary() : ui_theme_dim();
+}
+
+void ui_speedScreen_setPackCurrent(float amps)
+{
+    if (ui_speedScreen == NULL) return;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1f A", amps);
+    setCardValue(&packACard, buf, liveColor());
+}
+
+void ui_speedScreen_setPower(float kw)
+{
+    if (ui_speedScreen == NULL) return;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1f kW", kw);
+    setCardValue(&powerCard, buf, liveColor());
+}
+
+void ui_speedScreen_setAuxVoltage(float volts)
+{
+    if (ui_speedScreen == NULL) return;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1f V", volts);
+    setCardValue(&auxCard, buf, liveColor());
+}
+
+void ui_speedScreen_refreshOdometer(void)
+{
+    if (ui_speedScreen == NULL) return;
+    long odo = (long)(odometer_total_miles() * 10.0);
+    long trip = (long)(odometer_trip_miles() * 10.0);
+    char buf[16];
+    if (odo != shownOdoTenths) {
+        shownOdoTenths = odo;
+        // Same format as TRIP - no leading zeros (Rob, 2026-10-21: the
+        // zero-padded "000000.0" was too many digits). Wraps at 1,000,000.
+        snprintf(buf, sizeof(buf), "%ld.%ld mi", (odo / 10) % 1000000L, odo % 10);
+        lv_label_set_text(odoLabel, buf);
     }
-    ui_pill_setState(ui_dirPill, ui_dirLabel, ui_dirPillState, text);
+    if (trip != shownTripTenths && !tripFlashTimer) {
+        shownTripTenths = trip;
+        snprintf(buf, sizeof(buf), "%ld.%ld mi", (trip / 10) % 10000L, trip % 10);
+        lv_label_set_text(tripLabel, buf);
+    }
+}
+
+// --- Theme ------------------------------------------------------------------
+
+static void restylePanel(lv_obj_t *p) {
+    if (!p) return;
+    lv_obj_set_style_bg_color(p, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(p, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+}
+
+static void restyleGauge(gauge_t *g, int32_t max) {
+    restylePanel(g->panel);
+    lv_obj_set_style_text_color(g->title, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    styleGaugeScale(g, max);
+    g->needle->type_data.needle_line.color = ui_theme_accent();
+    g->zone->type_data.arc.color = ui_theme_warning();
+    lv_obj_invalidate(g->meter);
 }
 
 void ui_speedScreen_refresh_theme(void)
@@ -183,25 +455,32 @@ void ui_speedScreen_refresh_theme(void)
     if (ui_speedScreen == NULL) return;
 
     lv_obj_set_style_bg_color(ui_speedScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (ui_speedTitleLabel) lv_obj_set_style_text_color(ui_speedTitleLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (ui_speedUnitLabel) lv_obj_set_style_text_color(ui_speedUnitLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(ui_speedUnitLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(odoCaption, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(tripCaption, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(odoLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(tripLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    restylePanel(odoBox);
+    restylePanel(tripBox);
 
-    if (ui_speedMeter && speedScale) {
-        // Re-invoke with the same geometry, new colors only - see the
-        // speedScale comment at the top of this file.
-        lv_meter_set_scale_ticks(ui_speedMeter, speedScale, 25, 2, 12, ui_theme_text_primary());
-        lv_meter_set_scale_major_ticks(ui_speedMeter, speedScale, 4, 3, 18, ui_theme_text_primary(), 16);
-        lv_obj_set_style_text_color(ui_speedMeter, ui_theme_text_primary(), LV_PART_TICKS | LV_STATE_DEFAULT);
+    lv_meter_set_scale_ticks(ui_speedMeter, speedScale, 25, 2, 12, ui_theme_text_primary());
+    lv_meter_set_scale_major_ticks(ui_speedMeter, speedScale, 4, 3, 18, ui_theme_text_primary(), 16);
+    lv_obj_set_style_text_color(ui_speedMeter, ui_theme_text_primary(), LV_PART_TICKS | LV_STATE_DEFAULT);
+    ui_speedNeedle->type_data.needle_line.color = ui_theme_accent();
+    lv_obj_invalidate(ui_speedMeter);
+
+    for (int i = 0; i < 4; i++) styleGearBox(i);
+    restyleGauge(&socGauge, SOC_MAX);
+    restyleGauge(&tempGauge, TEMP_MAX);
+
+    card_t *cards[4] = {&powerCard, &packVCard, &packACard, &auxCard};
+    for (int i = 0; i < 4; i++) {
+        restylePanel(cards[i]->panel);
+        lv_obj_set_style_text_color(cards[i]->title, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     }
-    if (ui_speedNeedle) {
-        ui_speedNeedle->type_data.needle_line.color = ui_theme_accent();
-        lv_obj_invalidate(ui_speedMeter);
-    }
-    ui_pill_refreshTheme(ui_dirPill, ui_dirPillState);
     ui_dock_refresh_theme(ui_speedScreenDock, UI_DOCK_TELEMETRY);
-    // ui_speedValLabel is data-driven (warn color) and left alone here - it
-    // self-corrects on its next natural data update, same reasoning as
-    // every other screen in this codebase.
+    // Value labels (speed, gauges, cards) are data-driven and recolor on
+    // their next update, same as every other screen.
 }
 
 void ui_speedScreen_screen_destroy(void)
@@ -209,14 +488,23 @@ void ui_speedScreen_screen_destroy(void)
     if (ui_speedScreen) lv_obj_del(ui_speedScreen);
 
     ui_speedScreen = NULL;
-    ui_speedTitleLabel = NULL;
     ui_speedMeter = NULL;
-    ui_speedNeedle = NULL;   // owned by the meter, freed with it above
-    speedScale = NULL;       // ditto
+    ui_speedNeedle = NULL;   // owned by the meter
+    speedScale = NULL;
     ui_speedValLabel = NULL;
     ui_speedUnitLabel = NULL;
-    ui_dirPill = NULL;
-    ui_dirLabel = NULL;
-    ui_dirPillState = UI_PILL_NEUTRAL;
+    odoCaption = odoBox = odoLabel = NULL;
+    tripBox = tripCaption = tripLabel = tripHit = NULL;
+    if (tripFlashTimer) lv_timer_del(tripFlashTimer);
+    tripFlashTimer = NULL;
+    shownOdoTenths = shownTripTenths = -1;
+    for (int i = 0; i < 4; i++) gearBox[i] = gearLabel[i] = NULL;
+    lv_memset_00(&socGauge, sizeof(socGauge));
+    lv_memset_00(&tempGauge, sizeof(tempGauge));
+    lv_memset_00(&powerCard, sizeof(powerCard));
+    lv_memset_00(&packVCard, sizeof(packVCard));
+    lv_memset_00(&packACard, sizeof(packACard));
+    lv_memset_00(&auxCard, sizeof(auxCard));
+    activeDir = 0;
     ui_speedScreenDock = NULL;
 }

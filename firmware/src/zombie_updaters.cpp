@@ -4,6 +4,7 @@
 #include "ui_can_freshness.h"
 #include "ui_card_grid.h"
 #include "ui_shutdown.h"
+#include "sdo_client.h"
 #include <math.h>
 
 ESP32S3_TWAI can;
@@ -28,7 +29,7 @@ void ui_notify_screen_created(void) {
 static void checkAutoTheme();
 
 // --- SDO poll table --------------------------------------------------------
-// All 25 live telemetry params (see the big comment in zombie_updaters.h for
+// All 26 live telemetry params (see the big comment in zombie_updaters.h for
 // why this covers what used to be CAN-broadcast-only fields too).
 struct PollEntry { uint16_t paramId; };
 static const PollEntry pollTable[] = {
@@ -57,11 +58,23 @@ static const PollEntry pollTable[] = {
     {PARAM_ID_AC_VOLTS},
     {PARAM_ID_PILOTLIM},
     {PARAM_ID_CABLELIM},
+    {PARAM_ID_REGENBRAKE},
 };
 static const size_t pollTableSize = sizeof(pollTable) / sizeof(pollTable[0]);
 static size_t pollCursor = 0;
 
+// Alternates slots with sdo_client.h's on-demand reads/writes whenever it
+// has something queued (Settings > Diagnostics / VCU Parameters pages) -
+// halves this table's refresh rate only while one of those pages is open,
+// and never adds a second request to any 50ms slot.
+static bool lastSlotWasClient = false;
+
 static void sendNextPollRequest() {
+    if (!lastSlotWasClient && sdo_client_poll_slot()) {
+        lastSlotWasClient = true;
+        return;
+    }
+    lastSlotWasClient = false;
     if (pollTableSize == 0) return;
     sdoRequestRead(pollTable[pollCursor].paramId);
     pollCursor = (pollCursor + 1) % pollTableSize;
@@ -105,6 +118,7 @@ static void applySdoValue(uint16_t paramId, int32_t rawValue) {
         case PARAM_ID_AC_VOLTS:    myData.acVolts       = value;       break;
         case PARAM_ID_PILOTLIM:    myData.pilotLimA     = value;       break;
         case PARAM_ID_CABLELIM:    myData.cableLimA     = value;       break;
+        case PARAM_ID_REGENBRAKE:  myData.regenBrake    = value;       break;
         default: break;
     }
 }
@@ -149,7 +163,7 @@ void TaskCANReceiver(void *pvParameters) {
     updateUiFast.attach_ms(PERIOD_FAST_MS, fastUpdate);
     updateUiMid.attach_ms(PERIOD_MID_MS, midUpdate);
     updateUiSlow.attach_ms(PERIOD_SLOW_MS, slowUpdate);
-    sendPoll.attach_ms(PERIOD_SDO_POLL_MS, sendNextPollRequest); // 25-entry table -> ~1250ms full refresh
+    sendPoll.attach_ms(PERIOD_SDO_POLL_MS, sendNextPollRequest); // 26-entry table -> ~1300ms full refresh
     autoThemeTicker.attach_ms(PERIOD_AUTO_THEME_MS, checkAutoTheme);
 #ifdef CAN_TRACE
     traceDump.attach_ms(1000, canTraceDumpMyData);
@@ -164,14 +178,22 @@ void TaskCANReceiver(void *pvParameters) {
                 }
 
                 if (id == SDO_RX_COBID) {
-                    uint16_t paramId;
+                    uint16_t index;
+                    uint8_t subindex;
                     int32_t rawValue;
-                    if (sdoParseResponse(data, length, &paramId, &rawValue)) {
+                    SdoResult res = sdoParseResponseEx(data, length, &index, &subindex, &rawValue);
+                    if (res == SDO_RESULT_VALUE && sdoIndexIsParam(index)) {
+                        uint16_t paramId = sdoParamIdFromIndex(index, subindex);
                         if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
                             applySdoValue(paramId, rawValue);
                             ui_can_freshness_notifyFrame();
                             xSemaphoreGive(dataMutex);
                         }
+                        sdo_client_on_value(paramId, rawValue);
+                    } else if (res == SDO_RESULT_WRITE_ACK) {
+                        sdo_client_on_write_ack(index, subindex);
+                    } else if (res == SDO_RESULT_ABORT) {
+                        sdo_client_on_abort(index, subindex, (uint32_t)rawValue);
                     }
                 } else {
                     if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
@@ -189,8 +211,10 @@ void TaskCANReceiver(void *pvParameters) {
 // --- Widget updaters ------------------------------------------------------
 // Bound across the four telemetry screens from the 2026-09-14 Speed/Drive/
 // Status/Battery split (see waveshare-dash-build.md):
-//   ui_speedScreen  - vehicle speed (mph, converted from vehSpeedKph) + the
-//                      P/N/F/R shifter-position pill (dirState)
+//   ui_speedScreen  - vehicle speed (mph, converted from vehSpeedKph), the
+//                      P R N F strip (dirState), SOC + motor temp gauges,
+//                      power/pack V/pack A/12V cards, odometer + trip
+//                      (2026-10-21 cluster layout)
 //   ui_driveScreen  - power, pack current, gear selection (text enum),
 //                      motor mode (text enum), regen limit
 //   ui_statusScreen - SOC, pack voltage, aux/12V voltage, motor temp,
@@ -345,6 +369,7 @@ void midUpdate() {
                 setWarnColor(ui_driveCurrValLabel, false);
             }
             ui_batteryScreen_setStatus(a);  // charging/discharging/idle pill - no-ops if screen doesn't exist yet
+            ui_speedScreen_setPackCurrent(a);
         }
         if (pChanged) {
             if (ui_drivePowerValLabel) {
@@ -352,6 +377,7 @@ void midUpdate() {
                 setWarnColor(ui_drivePowerValLabel, false);
             }
             if (ui_drivePowerBar) lv_bar_set_value(ui_drivePowerBar, (int)p, LV_ANIM_ON);
+            ui_speedScreen_setPower(p);
         }
         xSemaphoreGive(uiMutex);
     }
@@ -364,13 +390,13 @@ void slowUpdate() {
     bool forcePush = (lastGen != uiGeneration);
 
     bool socChanged = false, motTChanged = false, hsTChanged = false, voltChanged = false;
-    bool auxVChanged = false, gearChanged = false, motModeChanged = false, regenChanged = false;
+    bool auxVChanged = false, gearChanged = false, motModeChanged = false, regenChanged = false, brakeRegenChanged = false;
     bool vMaxChanged = false, vMinChanged = false, tMaxChanged = false;
     bool setpointChanged = false, chgTempChanged = false, chgStatusChanged = false;
     bool acVChanged = false, limChanged = false;
     int soc = 0, motT = 0, hsT = 0, gear = 0, motActive = 0, cellTMax = 0;
     int chgTempV = 0, opmode = 0, chgType = 0, plugDet = 0;
-    float volt = 0, auxV = 0, regen = 0, cellVMax = 0, cellVMin = 0;
+    float volt = 0, auxV = 0, regen = 0, brakeRegen = 0, cellVMax = 0, cellVMin = 0;
     float setpointV = 0, acV = 0, pilotLim = 0, cableLim = 0;
 
     bool gpsStatusChanged = false, gpsSpeedChanged = false, gpsLatLonChanged = false;
@@ -416,6 +442,9 @@ void slowUpdate() {
         }
         if (myData.regenMax != old_myData.regenMax || forcePush) {
             regenChanged = true; regen = myData.regenMax; old_myData.regenMax = myData.regenMax;
+        }
+        if (myData.regenBrake != old_myData.regenBrake || forcePush) {
+            brakeRegenChanged = true; brakeRegen = myData.regenBrake; old_myData.regenBrake = myData.regenBrake;
         }
         if (myData.cellVMax != old_myData.cellVMax || forcePush) {
             vMaxChanged = true; old_myData.cellVMax = myData.cellVMax;
@@ -537,12 +566,18 @@ void slowUpdate() {
     bool overTemp = (curMotorTemp >= warningSet.motorTemp) || (curHeatsinkTemp >= warningSet.heatsinkTemp);
     if (xSemaphoreTake(uiMutex, portMAX_DELAY) == pdTRUE) {
         ui_fault_banner_update(canDropout, overTemp, curLastErr);
+        // Home screen's odometer/trip (odometer.h integrates in loop();
+        // this only redraws when the shown tenth changes) and its gauges'
+        // warning arcs - every tick, not dirty-checked, both are cheap
+        // no-ops when nothing moved.
+        ui_speedScreen_refreshOdometer();
+        ui_speedScreen_setThresholds(warningSet.lowSoc, warningSet.motorTemp);
         xSemaphoreGive(uiMutex);
     }
 
     bool deltaVChanged = vMaxChanged || vMinChanged;
     if (!(socChanged || motTChanged || hsTChanged || voltChanged || auxVChanged ||
-          gearChanged || motModeChanged || regenChanged || vMaxChanged || vMinChanged || tMaxChanged ||
+          gearChanged || motModeChanged || regenChanged || brakeRegenChanged || vMaxChanged || vMinChanged || tMaxChanged ||
           setpointChanged || chgTempChanged || chgStatusChanged || acVChanged || limChanged ||
           gpsStatusChanged || gpsSpeedChanged || gpsLatLonChanged || gpsHeadingChanged || gpsAltChanged ||
           clockChanged)) {
@@ -585,6 +620,7 @@ void slowUpdate() {
             // the animated fill tween in one call (no-op if the screen
             // doesn't exist yet).
             ui_chargingScreen_setSoc(soc, warn);
+            ui_speedScreen_setSoc(soc, warn, noData);
             // GPS NAV screen's top status bar (component 5) - plain text,
             // same reasoning as everywhere else that isn't cell-level detail.
             if (ui_navSocLabel) lv_label_set_text_fmt(ui_navSocLabel, ICON_BOLT " %d%%", soc);
@@ -596,6 +632,7 @@ void slowUpdate() {
                 setWarnColor(ui_statusMotorTValLabel, warn);
             }
             if (ui_statusMotorTBar) lv_bar_set_value(ui_statusMotorTBar, motT, LV_ANIM_ON);
+            ui_speedScreen_setMotorTemp(motT, warn);
         }
         if (hsTChanged) {
             // Status screen's "Inverter Temp" panel - heatsinkTemp is the
@@ -618,6 +655,7 @@ void slowUpdate() {
                 if (noData) ui_card_setValueNoData(ui_statusPackVValLabel, NULL, true);
                 else { ui_card_setValueNoData(ui_statusPackVValLabel, NULL, false); setWarnColor(ui_statusPackVValLabel, warn); }
             }
+            ui_speedScreen_setPackVoltage(volt, warn, noData);
         }
         if (auxVChanged) {
             if (ui_statusAuxVBar) lv_bar_set_value(ui_statusAuxVBar, (int)auxV, LV_ANIM_ON);
@@ -625,6 +663,7 @@ void slowUpdate() {
                 lv_label_set_text_fmt(ui_statusAuxVValLabel, "%.1f V", auxV);
                 setWarnColor(ui_statusAuxVValLabel, false);
             }
+            ui_speedScreen_setAuxVoltage(auxV);
             // Low-12V shutdown sequence (styling pass Phase 6, item 12-13) -
             // driven off this same dirty-checked aux12V value, no separate
             // polling path. Gated on real CAN data having arrived at least
@@ -652,11 +691,22 @@ void slowUpdate() {
         if (motModeChanged) {
             if (ui_driveMotorModeValLabel) lv_label_set_text(ui_driveMotorModeValLabel, motorModeText(motActive));
         }
+        // Regen limit / brake regen are negative % on the VCU (-35..0, per
+        // the Dial firmware) - label shows the VCU's own signed value, bar
+        // shows magnitude (0..35) so it actually fills (2026-10-21 fix - the
+        // bar was 0..100 against a negative value and never moved).
         if (regenChanged) {
-            if (ui_driveRegenBar) lv_bar_set_value(ui_driveRegenBar, (int)regen, LV_ANIM_ON);
+            if (ui_driveRegenBar) lv_bar_set_value(ui_driveRegenBar, (int)fabsf(regen), LV_ANIM_ON);
             if (ui_driveRegenValLabel) {
                 lv_label_set_text_fmt(ui_driveRegenValLabel, "%.0f", regen);
                 setWarnColor(ui_driveRegenValLabel, false);
+            }
+        }
+        if (brakeRegenChanged) {
+            if (ui_driveBrakeRegenBar) lv_bar_set_value(ui_driveBrakeRegenBar, (int)fabsf(brakeRegen), LV_ANIM_ON);
+            if (ui_driveBrakeRegenValLabel) {
+                lv_label_set_text_fmt(ui_driveBrakeRegenValLabel, "%.0f", brakeRegen);
+                setWarnColor(ui_driveBrakeRegenValLabel, false);
             }
         }
         if (vMaxChanged) {

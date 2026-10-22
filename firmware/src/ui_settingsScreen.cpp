@@ -20,6 +20,11 @@
 //        vehicle_config.h's values without a reflash).
 //     3. CALIBRATION - dyno workflow entry point (stub - the dyno screens
 //        haven't been built yet).
+//     4-6. VCU PARAMETERS / DIAGNOSTICS / DATA LOGGING (2026-10-21) - each
+//        built in its own file (ui_settingsVcuParams.cpp,
+//        ui_settingsDiagnostics.cpp, ui_settingsLogging.cpp) via
+//        ui_settings_common.h; this file only adds their root-list rows and
+//        tells them when their page is shown/hidden (menuPageChangedCb()).
 //
 // Touch targets: buttons are 84px (>=80px minimum per CLAUDE.md).
 // Navigation (styling/UX pass Phase 5, 2026-09-18): physical swipe RIGHT
@@ -36,12 +41,13 @@
 #include "zombie_updaters.h"  // warningSet, updateWarningsSet, displayPref, applyDisplayMode - includes ui.h
 #include "build_info.h"
 #include "wifi_config_server.h"
+#include "ui_settings_common.h"
 
 lv_obj_t * ui_settingsScreen = NULL;
 
 static lv_obj_t * menu = NULL;
 // Kept as statics (not screen_init() locals) so the contrast fix below -
-// see styleMenuSection()'s comment - can re-apply explicit colors from
+// see ui_settings_style_section()'s comment - can re-apply explicit colors from
 // refresh_theme() too, not just at creation time.
 //
 // Sub-page split (2026-09-26, design pass): this screen used to be one
@@ -52,7 +58,7 @@ static lv_obj_t * menu = NULL;
 // page, reached via lv_menu_set_load_page_event() - LVGL's own back-button/
 // history mechanism (lv_menu_get_main_header_back_btn()) handles returning
 // to this list, no custom back-navigation code needed. rootSection is the
-// list's own lv_menu_section_create() (for styleMenuSection() theming,
+// list's own lv_menu_section_create() (for ui_settings_style_section() theming,
 // same as the other three).
 static lv_obj_t * settingsPage = NULL;
 static lv_obj_t * rootSection = NULL;
@@ -87,7 +93,7 @@ static lv_obj_t * brightnessSlider = NULL;
 // UTC offset stepper (2026-09-22) - applies + persists immediately, same
 // "live preview" convention as Day/Night and Brightness above (not gated
 // behind the Warning Thresholds section's Save button, even though it's
-// built with the same createThresholdRow() widget helper for visual
+// built with the same ui_settings_create_stepper_row() widget helper for visual
 // consistency - see utcOffsetStepperCb() for why it needs its own wiring
 // instead of reusing wireThresholdRow()/stepperEventCb()).
 static lv_obj_t * utcOffsetSpinbox = NULL;
@@ -109,8 +115,8 @@ static lv_obj_t * ui_settingsScreenDock = NULL;
 // safety-minimum tap size. Interaction model unchanged (+/- stepper, no
 // keypad) - CLAUDE.md documents that as a deliberate driving-safety choice,
 // not an oversight, so it stays even though the buttons are getting smaller.
-#define ROW_HEIGHT    88
-#define STEPPER_BTN   80
+// ROW_HEIGHT/STEPPER_BTN now live in ui_settings_common.h (2026-10-21) so
+// the sub-pages in their own files share them.
 
 // Shared by every +/- stepper button on this screen - only one can be held
 // at a time on a single-touch panel, so one counter is enough. Reset on
@@ -154,8 +160,35 @@ void ui_event_settingsScreen(lv_event_t * e)
     }
 }
 
+// Tells each sub-page module which page is now showing, so the ones that
+// poll the VCU (VCU Parameters, Diagnostics) only do so while visible -
+// see ui_settings_common.h for the leave-before-enter ordering rule.
+// page == NULL means the Settings screen itself is no longer shown.
+static void notifyPageModules(lv_obj_t *page) {
+    ui_settingsVcuParams_page_leave(page);
+    ui_settingsDiagnostics_page_leave(page);
+    ui_settingsLogging_page_leave(page);
+    ui_settingsVcuParams_page_enter(page);
+    ui_settingsDiagnostics_page_enter(page);
+    ui_settingsLogging_page_enter(page);
+}
+
+static void menuPageChangedCb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED || lv_event_get_target(e) != menu) return;
+    notifyPageModules(lv_menu_get_cur_main_page(menu));
+}
+
+// This screen is never actually deleted when navigating away (see
+// ui_helpers.cpp's _ui_screen_delete()), so a sub-page left showing would
+// keep polling the VCU from other screens - stop on unload, resume on load.
+static void screenLoadCb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_SCREEN_UNLOADED) notifyPageModules(NULL);
+    else if (code == LV_EVENT_SCREEN_LOADED && menu) notifyPageModules(lv_menu_get_cur_main_page(menu));
+}
+
 // --- Warning-threshold row: "Title" [-] [ NNN unit ] [+] --------------------
-static lv_obj_t *createThresholdRow(lv_obj_t *section, const char *title,
+lv_obj_t *ui_settings_create_stepper_row(lv_obj_t *section, const char *title,
                                      int32_t rangeMin, int32_t rangeMax, int32_t initialValue,
                                      uint8_t digitCount, uint8_t decimalPos) {
     lv_obj_t *cont = lv_menu_cont_create(section);
@@ -225,7 +258,7 @@ static void stepperEventCb(lv_event_t *e, int dir) {
 static void minusStepperCb(lv_event_t *e) { stepperEventCb(e, -1); }
 static void plusStepperCb(lv_event_t *e)  { stepperEventCb(e, 1); }
 
-// Wires a threshold row's +/- buttons - split from createThresholdRow() so
+// Wires a threshold row's +/- buttons - split from ui_settings_create_stepper_row() so
 // that function can stay a simple "build it, return the spinbox" helper.
 static void wireThresholdRow(lv_obj_t *spinbox) {
     // The row's children are: [0]=label, [1]=minusBtn, [2]=spinbox, [3]=plusBtn
@@ -241,7 +274,7 @@ static void wireThresholdRow(lv_obj_t *spinbox) {
 // Warning Thresholds section's Save button, but this control lives in the
 // Display section and needs the same "apply + persist immediately, live
 // preview" behavior as Day/Night and Brightness (CLAUDE.md: "don't wait for
-// Save to show the visual change"). Reuses createThresholdRow() purely for
+// Save to show the visual change"). Reuses ui_settings_create_stepper_row() purely for
 // its widget layout (label + minus + spinbox + plus), not its Save-flow
 // wiring.
 static void utcOffsetStepperCb(lv_event_t *e, int dir) {
@@ -276,19 +309,19 @@ static void utcOffsetPlusCb(lv_event_t *e)  { utcOffsetStepperCb(e, 1); }
 // chrome. Fix: color every row/section explicitly from ui_theme, same as
 // every hand-built panel elsewhere - both at creation and again in
 // refresh_theme() so a day/night toggle re-applies it too.
-static void styleMenuRow(lv_obj_t *row) {
+void ui_settings_style_row(lv_obj_t *row) {
     if (!row) return;
     lv_obj_set_style_bg_color(row, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(row, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(row, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
-static void styleMenuSection(lv_obj_t *section) {
+void ui_settings_style_section(lv_obj_t *section) {
     if (!section) return;
     lv_obj_set_style_bg_color(section, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(section, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     uint32_t n = lv_obj_get_child_cnt(section);
-    for (uint32_t i = 0; i < n; i++) styleMenuRow(lv_obj_get_child(section, i));
+    for (uint32_t i = 0; i < n; i++) ui_settings_style_row(lv_obj_get_child(section, i));
 }
 
 static void saveBtnCb(lv_event_t *e) {
@@ -377,6 +410,8 @@ static void updateWifiConfigStatusLabel(void) {
     if (wifi_config_server_is_running()) {
         lv_label_set_text(wifiConfigStatusLabel,
             "SSID: " WIFI_CONFIG_SSID "  Pass: " WIFI_CONFIG_PASSWORD "  ->  192.168.4.1");
+    } else if (wifi_config_server_last_error()[0]) {
+        lv_label_set_text(wifiConfigStatusLabel, wifi_config_server_last_error());
     } else {
         lv_label_set_text(wifiConfigStatusLabel, "Off");
     }
@@ -387,6 +422,8 @@ static void wifiConfigSwitchCb(lv_event_t *e) {
     bool enabled = lv_obj_has_state(wifiConfigSwitch, LV_STATE_CHECKED);
     if (enabled) wifi_config_server_start();
     else wifi_config_server_stop();
+    // Start can fail (2026-10-21) - flip the switch back rather than show "on".
+    if (enabled && !wifi_config_server_is_running()) lv_obj_clear_state(wifiConfigSwitch, LV_STATE_CHECKED);
     updateWifiConfigStatusLabel();
 }
 
@@ -440,10 +477,10 @@ void ui_settingsScreen_screen_init(void)
     lv_obj_set_style_bg_color(thPage, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
     thSection = lv_menu_section_create(thPage);
-    socSpinbox = createThresholdRow(thSection, "Low SOC (%)", 0, 100, warningSet.lowSoc, 3, 0);
-    motorTSpinbox = createThresholdRow(thSection, "High Motor Temp (\xC2\xB0" "C)", -40, 200, warningSet.motorTemp, 3, 0);
-    heatsinkTSpinbox = createThresholdRow(thSection, "High Heatsink Temp (\xC2\xB0" "C)", 0, 150, warningSet.heatsinkTemp, 3, 0);
-    packVSpinbox = createThresholdRow(thSection, "Low Pack Voltage (V)", 2000, 4500, (int32_t)(warningSet.packVLow * 10), 4, 1);
+    socSpinbox = ui_settings_create_stepper_row(thSection, "Low SOC (%)", 0, 100, warningSet.lowSoc, 3, 0);
+    motorTSpinbox = ui_settings_create_stepper_row(thSection, "High Motor Temp (\xC2\xB0" "C)", -40, 200, warningSet.motorTemp, 3, 0);
+    heatsinkTSpinbox = ui_settings_create_stepper_row(thSection, "High Heatsink Temp (\xC2\xB0" "C)", 0, 150, warningSet.heatsinkTemp, 3, 0);
+    packVSpinbox = ui_settings_create_stepper_row(thSection, "Low Pack Voltage (V)", 2000, 4500, (int32_t)(warningSet.packVLow * 10), 4, 1);
     wireThresholdRow(socSpinbox);
     wireThresholdRow(motorTSpinbox);
     wireThresholdRow(heatsinkTSpinbox);
@@ -537,7 +574,7 @@ void ui_settingsScreen_screen_init(void)
     // Thresholds spinboxes for visual consistency, but wired separately
     // (utcOffsetMinusCb/PlusCb) for immediate apply+persist - see
     // utcOffsetStepperCb()'s comment.
-    utcOffsetSpinbox = createThresholdRow(dispSection, "UTC Offset (hr)", -12, 14, utcOffsetHours, 2, 0);
+    utcOffsetSpinbox = ui_settings_create_stepper_row(dispSection, "UTC Offset (hr)", -12, 14, utcOffsetHours, 2, 0);
     {
         lv_obj_t *cont = lv_obj_get_parent(utcOffsetSpinbox);
         lv_obj_t *minusBtn = lv_obj_get_child(cont, 1);
@@ -600,6 +637,11 @@ void ui_settingsScreen_screen_init(void)
     lv_label_set_text(calBtnLabel, "Not built yet");
     lv_obj_center(calBtnLabel);
 
+    // --- VCU Parameters / Diagnostics / Data Logging pages (2026-10-21) ---
+    lv_obj_t *vcuParamsPage = ui_settingsVcuParams_create_page(menu);
+    lv_obj_t *diagPage = ui_settingsDiagnostics_create_page(menu);
+    lv_obj_t *logPage = ui_settingsLogging_create_page(menu);
+
     // --- Root list page (2026-09-26 sub-page split) ---
     // What used to be the single shared page holding all three sections
     // stacked - now just a short list of the three section names, each
@@ -614,6 +656,9 @@ void ui_settingsScreen_screen_init(void)
     createNavRow(rootSection, "Warning Thresholds", thPage);
     createNavRow(rootSection, "Display", dispPage);
     createNavRow(rootSection, "Calibration", calPage);
+    createNavRow(rootSection, "VCU Parameters", vcuParamsPage);
+    createNavRow(rootSection, "Diagnostics", diagPage);
+    createNavRow(rootSection, "Data Logging", logPage);
 
     // Firmware version - global info, not section-specific, so it stays on
     // the list itself rather than living inside any one section's page
@@ -625,14 +670,14 @@ void ui_settingsScreen_screen_init(void)
     lv_obj_set_style_text_color(fwLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(fwLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // Explicit contrast-fix colors - see styleMenuSection()'s header comment
+    // Explicit contrast-fix colors - see ui_settings_style_section()'s header comment
     // for the root cause. fwRow sits directly on settingsPage, not inside
-    // rootSection, so it needs its own styleMenuRow() call.
-    styleMenuSection(rootSection);
-    styleMenuSection(thSection);
-    styleMenuSection(dispSection);
-    styleMenuSection(calSection);
-    styleMenuRow(fwRow);
+    // rootSection, so it needs its own ui_settings_style_row() call.
+    ui_settings_style_section(rootSection);
+    ui_settings_style_section(thSection);
+    ui_settings_style_section(dispSection);
+    ui_settings_style_section(calSection);
+    ui_settings_style_row(fwRow);
 
     lv_menu_set_page(menu, settingsPage);
 
@@ -652,7 +697,7 @@ void ui_settingsScreen_screen_init(void)
     // button, not the header - so it rendered in LVGL's default (dark,
     // meant for a light background) color, invisible against this
     // project's own dark panel background. Same root cause this file's
-    // styleMenuRow()/styleMenuSection() already fixed once for row/section
+    // ui_settings_style_row()/ui_settings_style_section() already fixed once for row/section
     // backgrounds; fixed here the same way - style the actual button and
     // its icon child directly, not an ancestor, so there's no inheritance
     // chain to get blocked.
@@ -672,7 +717,7 @@ void ui_settingsScreen_screen_init(void)
     }
 
     // Header bar contrast fix (2026-09-26) - same root cause/fix as
-    // styleMenuRow()/styleMenuSection() above: this is more never-touched
+    // ui_settings_style_row()/ui_settings_style_section() above: this is more never-touched
     // lv_menu stock chrome (the fixed title bar showing each page's title +
     // the back button), which otherwise falls back to LVGL's built-in
     // light theme. No per-object title-label getter exists in this LVGL
@@ -702,6 +747,9 @@ void ui_settingsScreen_screen_init(void)
     // which only steps out of a section page back to this root list.
     lv_obj_add_event_cb(ui_settingsScreen, ui_event_settingsScreen, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(menu, ui_event_settingsScreen, LV_EVENT_ALL, NULL);
+    lv_obj_add_event_cb(menu, menuPageChangedCb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(ui_settingsScreen, screenLoadCb, LV_EVENT_SCREEN_LOADED, NULL);
+    lv_obj_add_event_cb(ui_settingsScreen, screenLoadCb, LV_EVENT_SCREEN_UNLOADED, NULL);
 }
 
 void ui_settingsScreen_refresh_theme(void)
@@ -740,11 +788,11 @@ void ui_settingsScreen_refresh_theme(void)
     for (int i = 0; i < 4; i++) {
         if (pages[i]) lv_obj_set_style_bg_color(pages[i], ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     }
-    styleMenuSection(rootSection);
-    styleMenuSection(thSection);
-    styleMenuSection(dispSection);
-    styleMenuSection(calSection);
-    styleMenuRow(fwRow);
+    ui_settings_style_section(rootSection);
+    ui_settings_style_section(thSection);
+    ui_settings_style_section(dispSection);
+    ui_settings_style_section(calSection);
+    ui_settings_style_row(fwRow);
     if (menu) {
         lv_obj_t *menuHeader = lv_menu_get_main_header(menu);
         if (menuHeader) {
@@ -764,6 +812,9 @@ void ui_settingsScreen_refresh_theme(void)
             }
         }
     }
+    ui_settingsVcuParams_refresh_theme();
+    ui_settingsDiagnostics_refresh_theme();
+    ui_settingsLogging_refresh_theme();
     ui_dock_refresh_theme(ui_settingsScreenDock, UI_DOCK_SETTINGS);
     // Section header labels, row title labels, and the +/-/default/cal
     // button chrome are left as their creation-time colors here - this

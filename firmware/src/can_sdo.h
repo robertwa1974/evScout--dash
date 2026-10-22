@@ -37,6 +37,19 @@
 #define SDO_CMD_WRITE_ACK   0x60   // expedited download response (success)
 #define SDO_CMD_ABORT       0x80   // error/abort response
 
+// libopeninv's command object (sdocommands.cpp): an expedited write to
+// index 0x5002 runs the command named by the subindex. Only SAVE is used
+// here (persist the VCU's current params to its own flash) - the same
+// thing the openinverter web UI's "Save parameters to flash" button sends.
+// Not yet verified against Rob's ZombieVerter on the bench (2026-10-21).
+#define SDO_INDEX_COMMANDS  0x5002
+#define SDO_SUBCMD_SAVE     0
+
+// Standard CANopen abort codes the VCU actually returns (bytes 4-7 of an
+// 0x80 abort frame).
+#define SDO_ABORT_NO_OBJECT 0x06020000UL  // param ID doesn't exist on this firmware
+#define SDO_ABORT_RANGE     0x06090030UL  // written value outside the param's min/max
+
 // OpenInverter fixed-point scale: most params are stored as value * 32.
 // TODO: confirm this against your Dial firmware - not all params
 // necessarily use the same scale factor.
@@ -59,6 +72,33 @@ bool sdoWrite(uint16_t paramId, int32_t rawValue);
 // read-response, fills outParamId and outValue and returns true.
 bool sdoParseResponse(const uint8_t *data, uint8_t length,
                        uint16_t *outParamId, int32_t *outValue);
+
+// Expedited write to an arbitrary index/subindex - sdoWrite() above is this
+// with the param-UID addressing applied. Used for SDO_INDEX_COMMANDS.
+bool sdoWriteRaw(uint16_t index, uint8_t subindex, int32_t rawValue);
+
+// Superset of sdoParseResponse(): also classifies write acks and aborts,
+// which sdo_client.h needs to track write/save outcomes. outValue is the
+// read value for SDO_RESULT_VALUE, the abort code for SDO_RESULT_ABORT, and
+// untouched otherwise. outIndex/outSubindex are the raw CANopen address the
+// VCU echoed back - see sdoIndexIsParam()/sdoParamIdFromIndex().
+typedef enum {
+    SDO_RESULT_INVALID,    // too short / unrecognized command byte
+    SDO_RESULT_VALUE,      // expedited upload (read) response
+    SDO_RESULT_WRITE_ACK,  // expedited download (write) succeeded
+    SDO_RESULT_ABORT,      // VCU rejected the request
+} SdoResult;
+
+SdoResult sdoParseResponseEx(const uint8_t *data, uint8_t length,
+                             uint16_t *outIndex, uint8_t *outSubindex, int32_t *outValue);
+
+inline bool sdoIndexIsParam(uint16_t index) {
+    return (index & 0xFF00) == SDO_BASE_INDEX;
+}
+
+inline uint16_t sdoParamIdFromIndex(uint16_t index, uint8_t subindex) {
+    return (uint16_t)(((index & 0xFF) << 8) | subindex);
+}
 
 inline float sdoToFloat(int32_t rawValue) {
     return (float)rawValue / OI_FIXED_POINT_SCALE;

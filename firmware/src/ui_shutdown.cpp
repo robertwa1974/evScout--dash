@@ -1,5 +1,6 @@
 // ui_shutdown.cpp - see ui_shutdown.h for scope/rationale.
 #include "ui_shutdown.h"
+#include "odometer.h"
 #include "ui.h"
 #include "display_driver.h"
 #include "zombie_updaters.h"  // lowVoltageShutdownEnabled - see its own comment for why this exists
@@ -133,6 +134,7 @@ static void stateTimerCb(lv_timer_t *timer) {
 
 static void enterWarning(void) {
     state = SHUTDOWN_WARNING;
+    odometer_request_save();  // last chance before power goes - saved from loop(), see odometer.h
     savedBrightness = brightnessVal;
     lv_obj_set_style_bg_opa(blackCurtain, 0, LV_PART_MAIN | LV_STATE_DEFAULT);  // in case a prior cycle left it opaque
     lv_obj_clear_flag(overlay, LV_OBJ_FLAG_HIDDEN);

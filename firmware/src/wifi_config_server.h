@@ -6,12 +6,16 @@
 // (dyno vehicle mass/target/launch thresholds, Home/Work coordinates) be
 // edited from a phone without a firmware reflash. AP MODE ONLY - the board
 // creates its own local network (WIFI_CONFIG_SSID below), your phone
-// connects directly to it. This is NOT internet access: the board never
-// joins an external network or makes an outbound request anywhere,
-// consistent with this project's existing "no internet on the dash"
-// design (see charging_stations.h/ui_destinationsScreen.h - both already
-// document this as a deliberate project-wide stance, not something this
-// file changes).
+// connects directly to it. This is the "local network" case in CLAUDE.md's
+// Networking section - the board never joins an external network or makes
+// an outbound request from here. Outside-internet features, if added, are a
+// separate opt-in and must not live in this file.
+//
+// Pages (2026-10-21 additions marked *):
+//   /           vehicle_config.h editor (dyno + Home/Work)
+//   /live     * live telemetry, refreshed once a second from /api/live
+//   /api/live * JSON snapshot of myData + GPS
+//   /logs     * data_logger.h CSV files - download / delete
 //
 // Off by default, toggled from the Settings screen (ui_settingsScreen.cpp's
 // "WiFi Config" row) - the AP does not broadcast at all times while
@@ -20,7 +24,9 @@
 //
 // Drive lockout (confirmed with Rob, 2026-09-22): both the page itself and
 // the save handler refuse to show/accept edits while myData.vehSpeedKph >
-// 0 - a phone reaching this page mid-drive can look but not touch, same
+// 0 - a phone reaching this page mid-drive can look but not touch (/live
+// stays available while moving; log download/delete are locked too, since
+// streaming a file blocks loop() and freezes the screen meanwhile), same
 // vehicle-safety caution already applied elsewhere in this project (no
 // keyboard popups while driving, 80px+ touch targets, etc.).
 
@@ -49,6 +55,10 @@ void wifi_config_server_stop(void);
 // Whether the AP is currently running - the Settings screen's switch
 // reads this to show its correct initial state.
 bool wifi_config_server_is_running(void);
+
+// Why the last start() failed, or "" - start() checks that the radio and
+// AP actually came up rather than assuming it (2026-10-21).
+const char *wifi_config_server_last_error(void);
 
 // Services any pending HTTP request - cheap no-op whenever the AP isn't
 // running. Call every loop() iteration (firmware.ino), no uiMutex needed

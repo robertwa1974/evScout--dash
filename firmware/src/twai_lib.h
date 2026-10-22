@@ -30,6 +30,10 @@
 // CAN Interval:
 #define POLLING_RATE_MS 20
 
+// Dead-bus backoff (2026-10-21): how long the driver stays uninstalled
+// after the bus is found dead before trying again. See getAlerts().
+#define BUS_RETRY_MS    2000
+
 #define TWAI_MODE       TWAI_MODE_NORMAL
 #define TWAI_FILTER_ONE false
 
@@ -69,6 +73,9 @@ public:
 
 private:
     bool _initialized = false;
+    uint32_t _alerts = TWAI_ALERT_RX_DATA;  // last alertConfigure() mask - restored after a recovery
+    bool _waitingRetry = false;              // driver uninstalled because the bus is dead
+    uint32_t _retryAtMs = 0;
 };
 
 #endif

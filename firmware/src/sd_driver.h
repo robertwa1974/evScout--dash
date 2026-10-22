@@ -22,6 +22,8 @@
 //                                      RGB565), see ui_splash_truck.h and
 //                                      firmware/assets/
 //                                      convert_splash_frames.py.
+//   /logs/LOG0001.csv..              - telemetry CSV logs, see
+//                                      data_logger.h (2026-10-21).
 //
 // Pin assignments confirmed against Waveshare's own official example
 // (github.com/waveshareteam/ESP32-S3-Touch-LCD-7, examples/Arduino/

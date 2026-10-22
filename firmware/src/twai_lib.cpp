@@ -65,6 +65,7 @@ bool ESP32S3_TWAI::alertConfigure(uint32_t alerts)
 {
   // Reconfigure alerts to detect frame receive, Bus-Off error and RX queue full states
   // TWAI_ALERT_RX_DATA | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_ERROR | TWAI_ALERT_RX_QUEUE_FULL;
+  _alerts = alerts;
   if (twai_reconfigure_alerts(alerts, NULL) != ESP_OK)
   {
 #ifdef DEBUG
@@ -75,23 +76,63 @@ bool ESP32S3_TWAI::alertConfigure(uint32_t alerts)
   return true;
 }
 
+// Dead-bus handling (rewritten 2026-10-21). The original uaDASH code
+// uninstalled + reinstalled the driver on EVERY bus error and then enabled
+// TWAI_ALERT_ALL. With no bus attached (bench, or VCU powered off) every SDO
+// poll goes unacknowledged, so that ran ~20x/second forever on core 0 -
+// alongside the WiFi stack - while the controller's automatic retransmits
+// raised an error interrupt per attempt. Suspected cause of phones failing
+// to join the config AP on the bench (not proven).
+//
+// Now: an isolated bus error is left to the controller (real buses see the
+// odd bit error; resetting for one would drop CAN for nothing). Only a
+// genuinely dead bus - bus-off, or stuck error-passive (TX error count >=
+// 128, i.e. nobody is ACKing) - uninstalls the driver, which stops the
+// retransmit storm, and it's retried every BUS_RETRY_MS with the caller's
+// own alert mask. send() already refuses while uninstalled.
 bool ESP32S3_TWAI::getAlerts()
 {
-  uint32_t alerts_triggered;
+  if (!_initialized)
+  {
+    if (_waitingRetry && (int32_t)(millis() - _retryAtMs) >= 0)
+    {
+      if (init())
+      {
+        alertConfigure(_alerts);
+        _waitingRetry = false;
+      }
+      else
+      {
+        _retryAtMs = millis() + BUS_RETRY_MS;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(POLLING_RATE_MS));
+    return false;
+  }
+
+  uint32_t alerts_triggered = 0;
   twai_read_alerts(&alerts_triggered, pdMS_TO_TICKS(POLLING_RATE_MS));
   // Check if message is received
   if (alerts_triggered & TWAI_ALERT_RX_DATA)
   {
     return true;
   }
-  if (alerts_triggered & (TWAI_ALERT_BUS_ERROR | TWAI_ALERT_BUS_OFF))
+
+  bool dead = (alerts_triggered & TWAI_ALERT_BUS_OFF) != 0;
+  if (!dead && (alerts_triggered & TWAI_ALERT_BUS_ERROR))
   {
-    close();
+    twai_status_info_t st;
+    dead = twai_get_status_info(&st) == ESP_OK &&
+           (st.state != TWAI_STATE_RUNNING || st.tx_error_counter >= 128);
+  }
+  if (dead)
+  {
 #ifdef DEBUG
-    Serial.println("ESP32S3_TWAI::getAlerts : TWAI_ALERT_BUS_ERROR");
+    Serial.println("ESP32S3_TWAI: bus dead (no ACK / bus-off) - driver off, retrying in 2s");
 #endif
-    init();
-    alertConfigure(TWAI_ALERT_ALL);
+    close();
+    _waitingRetry = true;
+    _retryAtMs = millis() + BUS_RETRY_MS;
   }
   return false;
 }

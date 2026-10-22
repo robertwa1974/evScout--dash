@@ -43,7 +43,11 @@ extern lv_obj_t * ui_driveRegenValLabel;
 extern lv_obj_t * ui_driveRegenUnitLabel;
 extern lv_obj_t * ui_driveRegenBar;
 
-extern lv_obj_t * ui_driveSparePanel;
+extern lv_obj_t * ui_driveBrakeRegenPanel;
+extern lv_obj_t * ui_driveBrakeRegenTitleLabel;
+extern lv_obj_t * ui_driveBrakeRegenValLabel;
+extern lv_obj_t * ui_driveBrakeRegenUnitLabel;
+extern lv_obj_t * ui_driveBrakeRegenBar;
 
 #ifdef __cplusplus
 } /*extern "C"*/

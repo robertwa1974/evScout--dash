@@ -87,6 +87,19 @@ confirmed against Waveshare's own official example
   logs a few harmless `E`-level warnings at boot. Waveshare's own demo has
   the same pattern; left alone since it's non-fatal.
 
+## Networking
+
+Two distinct cases, decided 2026-10-21 — keep them separate in design and
+code:
+- **Local network** (the dash's own Wi-Fi AP, or a LAN that a phone or
+  laptop joins, with no route to the outside world): allowed freely, e.g.
+  for a phone-viewable telemetry page or downloading SD logs.
+- **Outside internet** (reaching external servers, e.g. by joining a phone
+  hotspot to refresh charging-station data): also allowed, but only as a
+  distinct, opt-in feature. **Core screens must never depend on it** — the
+  dash has to work fully offline, with SD-card datasets as the baseline
+  source and internet only as an optional refresh path.
+
 ## Typography
 
 - Do NOT use uaDASH's original custom fonts (`ui_font_FontIndicator`,
@@ -162,11 +175,18 @@ confirmed against Waveshare's own official example
 
 ## Screen layout conventions
 
-- **Speed (home screen)**: full-screen `lv_meter` speedometer (needle +
-  tick scale), digital readout centered inside the meter face, displayed
-  in **mph** (converted from the underlying kph telemetry field at display
-  time only — never change the field's unit, the dyno screens depend on
-  it staying kph). Plus a P/N/F/R shifter-position pill below the meter.
+- **Speed (home screen)**: twin-binnacle cluster (2026-10-21, layout
+  idea from mianahm3d/webUI-STM_ESPCAR — concept only, no code). Left: a
+  400px `lv_meter` speedometer (needle + tick scale) with the digital
+  readout in **mph** (converted from the underlying kph telemetry field at
+  display time only — never change the field's unit, the dyno screens
+  depend on it staying kph), odometer above it and trip meter below
+  (long-press to reset). Right: display-only P R N D shifter strip, SOC
+  and motor-temp needle gauges (`lv_meter`, red zone follows the Settings
+  thresholds), and power / pack V / pack A / 12V cards. Odometer/trip
+  come from `odometer.h` — the VCU has no distance param, so the dash
+  integrates Veh_Speed (GPS fallback) and saves to NVS once per mile +
+  on low-12V shutdown; editable on the WiFi config page.
   This is the screen `ui_init()` creates at boot and the one every other
   screen's back-navigation eventually returns to.
 - **Drive**: 2x3 grid (six equal panels) of in-motion telemetry: Power,
@@ -174,8 +194,12 @@ confirmed against Waveshare's own official example
   Gear Selection and Motor Mode (plain enum-text panels, no bar — these
   are discrete states, not continuous quantities, so the "never
   `lv_slider`" rule's rationale doesn't imply a bar either), Regen Limit
-  (`lv_bar`), and one spare slot left deliberately empty for a future
-  field.
+  and Brake Regen (`lv_bar` of the magnitude — the VCU values are −35..0).
+  **Gear, Motor Mode, Regen Limit and Brake Regen are tap-to-edit**
+  (2026-10-21, mirroring Rob's Zombieverter-Dial-Display): the card opens
+  `ui_param_editor.h`'s full-screen editor — the only place display cards
+  double as inputs; their titles carry `LV_SYMBOL_EDIT` to say so. Live
+  SDO writes, not saved to VCU flash, same as the Dial.
 - **Status**: 2x3 grid of static/at-rest telemetry: SOC (`lv_arc`, scaled
   down to fit a grid cell — smaller than Battery's ring but the same
   arc-containment rule applies), Pack Voltage, Aux/12V Voltage, Motor
@@ -389,8 +413,9 @@ story). Key facts, so nobody re-derives them from scratch:
   vehicle's operating region — same regional-scoping decision as the
   statewide NAV tiles, generated once via `firmware/assets/
   gen_charging_stations.py` and shipped to the SD card at
-  `/charging/stations.bin`, never a live API call from the vehicle — this
-  project has no internet connectivity on the dash). Tapping a row calls
+  `/charging/stations.bin`, not a live API call — the dash had no network
+  connectivity when this was built; see "Networking" below for the
+  current policy). Tapping a row calls
   `ui_navScreen_requestRoute()` (generalized from the old Home-only
   `requestRouteHome()`) and swipes back to GPS NAV to show routing
   progress on the turn banner, which now reads "SELECT DESTINATION"
@@ -449,7 +474,25 @@ numeral. A secondary live speed/acceleration readout. A state badge
 - Use `lv_menu` with `lv_menu_section` groups, three sections: **(1)
   Warning Thresholds** (low SOC, high motor temp, low pack voltage),
   **(2) Display** (day/night, brightness), **(3) Calibration** (dyno
-  drivetrain-efficiency workflow entry point).
+  drivetrain-efficiency workflow entry point). Added 2026-10-21, each in
+  its own file via `ui_settings_common.h`: **(4) VCU Parameters**
+  (`ui_settingsVcuParams.cpp` — read/write a curated list of ZombieVerter
+  tunables over SDO + "save to VCU flash"), **(5) Diagnostics**
+  (`ui_settingsDiagnostics.cpp` — ~40 raw VCU spot values), **(6) Data
+  Logging** (`ui_settingsLogging.cpp` — CSV to SD, see `data_logger.h`).
+- **On-demand SDO goes through `sdo_client.h`**, never a direct
+  `sdoRequestRead()`/`sdoWrite()` from screen code: it shares the main
+  poll table's 50ms slot (alternating), so the bus never gets bursts.
+  Pages that watch params must stop when hidden (`*_page_leave()`) or the
+  main telemetry poll stays at half rate.
+- **Every VCU write is interlocked inside `sdo_client`** itself
+  (`sdo_client_write_allowed()`), not just by disabling buttons — don't
+  add a write path that bypasses it. Per-param levels, matching the Dial:
+  regenmax/regenBrake need live CAN only (**adjustable while driving**,
+  a deliberate choice, confirmed by Rob asking to mirror the Dial);
+  Gear/MotActive need the vehicle stopped (Veh_Speed 0, |rpm| ≤ 50, Run
+  OK); everything else, plus save-to-flash, needs
+  `sdo_client_vehicle_parked()` (stopped and not in Run).
 - **Numeric threshold adjustment**: `lv_spinbox` driven by large +/-
   buttons (use `LV_EVENT_LONG_PRESSED_REPEAT` for accelerating hold on
   press-and-hold). Not a slider (imprecise on a bumpy road), not a

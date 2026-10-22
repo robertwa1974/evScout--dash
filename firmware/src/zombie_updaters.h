@@ -14,7 +14,7 @@
 #define PERIOD_FAST_MS      20
 #define PERIOD_MID_MS       200
 #define PERIOD_SLOW_MS      800
-#define PERIOD_SDO_POLL_MS  50   // 25-entry pollTable -> ~1250ms full refresh
+#define PERIOD_SDO_POLL_MS  50   // 26-entry pollTable -> ~1300ms full refresh
 #define PERIOD_AUTO_THEME_MS 60000  // how often Auto mode re-checks GPS-based day/night (a sunrise/sunset crossing doesn't need finer granularity than this)
 
 // ============================================================================
@@ -76,6 +76,7 @@
 #define PARAM_ID_PLUGDET     2050  // 0=Off,1=On,2=na - charge plug/cable connected
 #define PARAM_ID_AC_VOLTS    2079  // V - AC supply voltage actually present at the charger
 #define PARAM_ID_PILOTLIM    2049  // A - control-pilot (CP) current limit: what the EVSE is currently offering
+#define PARAM_ID_REGENBRAKE  122   // % - brake-pedal regen (2026-10-21, Drive screen's editable 6th card; same -35..0 range as regenmax, per the Dial firmware)
 #define PARAM_ID_CABLELIM    2048  // A - proximity-pilot (PP) current limit: the cable's rated capacity (the closest thing to a raw "PPVal" this VCU exposes - there's no raw PP resistance/voltage telemetry, only these two derived current limits)
 
 // Default warning thresholds - EV equivalents of rusEFI's oil/coolant/rpm limits
@@ -117,6 +118,7 @@ typedef struct struct_message {
     float acVolts;          // AC_Volts - AC supply voltage at the charger
     float pilotLimA;        // PilotLim - CP-derived current limit (what the EVSE is offering)
     float cableLimA;        // CableLim - PP-derived current limit (the cable's rated capacity)
+    float regenBrake;       // regenBrake - brake-pedal regen %, negative (2026-10-21)
 
     // [custom, not in ZombieVerter's own object dictionary]
     int   dcdcState;        // your existing 5-state machine, from the 0x377 frame decode

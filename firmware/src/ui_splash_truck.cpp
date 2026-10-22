@@ -29,7 +29,17 @@
 // SD throughput doesn't support that pace for a turntable-sized frame,
 // and a slower-but-correctly-drawn revolve reads far better than a fast
 // one that visibly tears on most frames.
-#define FRAME_PERIOD_MS 400
+//
+// 2026-10-21 revision: Rob found 400ms (2.5fps) visibly jerky. The real
+// bottleneck was the SD SPI clock - SD.begin() defaulted to 4MHz; it now
+// runs at 20MHz (sd_driver.cpp), so preload keeps far ahead of playback.
+// Playback is back to 100ms (10fps, ~2.2s per lap), and instead of
+// streaming an uncached frame from SD mid-draw (the visible "rebuilding"),
+// the timer now HOLDS the current frame until the next one is cached - only
+// falling back to an SD read if preload is more than HOLD_MAX_MS behind, so
+// a missing/failed frame can still never stall the loop forever.
+#define FRAME_PERIOD_MS 100
+#define HOLD_MAX_MS     600
 #define FRAME_PIXEL_BYTES (UI_SPLASH_TRUCK_FRAME_SIZE * UI_SPLASH_TRUCK_FRAME_SIZE * 2)  // RGB565, 2 bytes/px
 
 // Logging gated the same way every other Serial diagnostic in this
@@ -238,6 +248,7 @@ static void drawFrameViaSdFallback(int idx) {
 }
 
 static int currentFrame = 0;
+static uint32_t lastAdvanceMs = 0;
 
 static void markShown(int idx) {
     frameEverShown[idx] = true;
@@ -265,15 +276,19 @@ static void markShown(int idx) {
 // FRAME_PERIOD_MS is therefore only a MINIMUM tick period for
 // already-cached frames, not a real-time pacing guarantee.
 static void truckTimerCb(lv_timer_t * timer) {
-    LV_UNUSED(timer);
+    // timer == NULL only for start()'s immediate first frame, which must
+    // draw something right away rather than hold.
     if (!truckImgObj) return;
 
     int idx = currentFrame;
     if (frameInPsram[idx]) {
         drawFrameFromPsram(idx);
+    } else if (timer != NULL && millis() - lastAdvanceMs < HOLD_MAX_MS) {
+        return;  // preload hasn't reached this frame yet - keep showing the current one
     } else {
         drawFrameViaSdFallback(idx);
     }
+    lastAdvanceMs = millis();
     markShown(idx);
     currentFrame = (currentFrame + 1) % UI_SPLASH_TRUCK_FRAME_COUNT;
 }
@@ -285,6 +300,7 @@ void ui_splash_truck_start(lv_obj_t * imgObj) {
     currentFrame = 0;
     for (int i = 0; i < UI_SPLASH_TRUCK_FRAME_COUNT; i++) frameEverShown[i] = false;
     lapComplete = false;
+    lastAdvanceMs = millis();
     truckTimerCb(NULL);  // show + mark frame 0 immediately, advances currentFrame to 1
     truckTimer = lv_timer_create(truckTimerCb, FRAME_PERIOD_MS, NULL);
 }
