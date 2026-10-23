@@ -24,6 +24,8 @@
 //                                      convert_splash_frames.py.
 //   /logs/LOG0001.csv..              - telemetry CSV logs, see
 //                                      data_logger.h (2026-10-21).
+//   /can/CAN0001.csv..               - raw CAN captures, SavvyCAN CSV,
+//                                      see can_capture.h (2026-10-22).
 //
 // Pin assignments confirmed against Waveshare's own official example
 // (github.com/waveshareteam/ESP32-S3-Touch-LCD-7, examples/Arduino/

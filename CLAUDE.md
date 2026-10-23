@@ -182,8 +182,10 @@ code:
   display time only — never change the field's unit, the dyno screens
   depend on it staying kph), odometer above it and trip meter below
   (long-press to reset). Right: display-only P R N D shifter strip, SOC
-  and motor-temp needle gauges (`lv_meter`, red zone follows the Settings
-  thresholds), and power / pack V / pack A / 12V cards. Odometer/trip
+  and inverter-temp needle gauges (`lv_meter`, red zone follows the
+  Settings thresholds; inverter/heatsink rather than motor temp since
+  2026-10-22 — it usually derates first and its sensor always reports;
+  motor temp stays on Status), and power / pack V / pack A / 12V cards. Odometer/trip
   come from `odometer.h` — the VCU has no distance param, so the dash
   integrates Veh_Speed (GPS fallback) and saves to NVS once per mile +
   on low-12V shutdown; editable on the WiFi config page.
@@ -480,6 +482,16 @@ numeral. A secondary live speed/acceleration readout. A state badge
   tunables over SDO + "save to VCU flash"), **(5) Diagnostics**
   (`ui_settingsDiagnostics.cpp` — ~40 raw VCU spot values), **(6) Data
   Logging** (`ui_settingsLogging.cpp` — CSV to SD, see `data_logger.h`).
+  Added 2026-10-22: **(7) CAN Monitor** (`ui_settingsCanMonitor.cpp` +
+  `can_monitor.h`) — per-ID bus summary for checking Rob's own setup and
+  new devices (full decoding stays in SavvyCAN on the bench): bus health,
+  light decoding of VCU SDO / IVT-S / SimpBMS frames, a shunt-vs-VCU
+  current/voltage cross-check, and a saved known-good baseline (NVS) that
+  flags NEW / MISSING / RATE, plus raw capture to `/can/CANnnnn.csv` in
+  SavvyCAN's native CSV format (`can_capture.h`; includes the dash's own
+  SDO requests as Tx). IVT-S values are little-endian int32 in
+  bytes 2-5 — that's how the ZombieVerter's `IsaInit` configures the
+  shunt, taken from Rob's Stm32-vcu fork, not the IVT-S factory default.
 - **On-demand SDO goes through `sdo_client.h`**, never a direct
   `sdoRequestRead()`/`sdoWrite()` from screen code: it shares the main
   poll table's 50ms slot (alternating), so the bus never gets bursts.

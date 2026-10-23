@@ -5,6 +5,8 @@
 #include "ui_card_grid.h"
 #include "ui_shutdown.h"
 #include "sdo_client.h"
+#include "can_monitor.h"
+#include "can_capture.h"
 #include <math.h>
 
 ESP32S3_TWAI can;
@@ -173,6 +175,8 @@ void TaskCANReceiver(void *pvParameters) {
         if (can.getAlerts()) {
             while (can.receive(&id, data, &length, &extended)) {
                 canTraceFrame("RX", id, data, length);
+                can_monitor_on_frame(id, extended, data, length);  // Settings > CAN Monitor - no-op unless that page is open
+                can_capture_on_frame(id, extended, data, length, false);  // SD capture - no-op unless running
                 if (extended) {
                     continue; // ZombieVerter traffic here is standard (11-bit) ID
                 }
@@ -571,7 +575,7 @@ void slowUpdate() {
         // warning arcs - every tick, not dirty-checked, both are cheap
         // no-ops when nothing moved.
         ui_speedScreen_refreshOdometer();
-        ui_speedScreen_setThresholds(warningSet.lowSoc, warningSet.motorTemp);
+        ui_speedScreen_setThresholds(warningSet.lowSoc, warningSet.heatsinkTemp);
         xSemaphoreGive(uiMutex);
     }
 
@@ -632,7 +636,6 @@ void slowUpdate() {
                 setWarnColor(ui_statusMotorTValLabel, warn);
             }
             if (ui_statusMotorTBar) lv_bar_set_value(ui_statusMotorTBar, motT, LV_ANIM_ON);
-            ui_speedScreen_setMotorTemp(motT, warn);
         }
         if (hsTChanged) {
             // Status screen's "Inverter Temp" panel - heatsinkTemp is the
@@ -643,6 +646,7 @@ void slowUpdate() {
                 lv_label_set_text_fmt(ui_statusInvTValLabel, "%d\xC2\xB0" "C", hsT);
                 setWarnColor(ui_statusInvTValLabel, warn);
             }
+            ui_speedScreen_setInverterTemp(hsT, warn);
         }
         if (voltChanged) {
             // Same no-data gate as SOC above, same bug (0 <= packVLow

@@ -1,5 +1,6 @@
 #include "can_sdo.h"
 #include "can_trace.h"
+#include "can_capture.h"
 
 // Encoding confirmed against Rob's own SDOManager.cpp (Dial firmware).
 
@@ -16,7 +17,11 @@ bool sdoRequestRead(uint16_t paramId) {
     // bytes 4-7 stay zero for a read request
 
     canTraceSdoTx(SDO_TX_COBID, data, sizeof(data), paramId);
-    return can.send(SDO_TX_COBID, data, sizeof(data), false); // standard (11-bit) ID
+    bool ok = can.send(SDO_TX_COBID, data, sizeof(data), false); // standard (11-bit) ID
+    // Our own frames never come back through RX - record them for CAN
+    // capture here (can_capture.h; no-op unless a capture is running).
+    if (ok) can_capture_on_frame(SDO_TX_COBID, false, data, sizeof(data), true);
+    return ok;
 }
 
 bool sdoWriteRaw(uint16_t index, uint8_t subindex, int32_t rawValue) {
@@ -32,7 +37,9 @@ bool sdoWriteRaw(uint16_t index, uint8_t subindex, int32_t rawValue) {
     data[7] = (uint8_t)((rawValue >> 24) & 0xFF);
 
     canTraceSdoTx(SDO_TX_COBID, data, sizeof(data), sdoParamIdFromIndex(index, subindex));
-    return can.send(SDO_TX_COBID, data, sizeof(data), false);
+    bool ok = can.send(SDO_TX_COBID, data, sizeof(data), false);
+    if (ok) can_capture_on_frame(SDO_TX_COBID, false, data, sizeof(data), true);
+    return ok;
 }
 
 bool sdoWrite(uint16_t paramId, int32_t rawValue) {

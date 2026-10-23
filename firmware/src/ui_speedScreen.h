@@ -14,7 +14,7 @@ extern "C" {
 //            for the dyno screens), with the odometer above the digital
 //            readout and the trip meter below it (long-press trip to reset)
 //   right  - P R N D shifter strip (display-only, from myData.dirState),
-//            SOC and motor-temp needle gauges, and power / pack V / pack A /
+//            SOC and inverter-temp needle gauges, and power / pack V / pack A /
 //            12V cards
 // Everything sits above the 72px dock (408px of usable height).
 extern void ui_speedScreen_screen_init(void);
@@ -30,15 +30,15 @@ extern void ui_speedScreen_setDirState(int dirState);
 // noData: nothing has ever arrived from the VCU (dim, not red/zero - same
 // rule as ui_card_setValueNoData()).
 extern void ui_speedScreen_setSoc(int soc, bool warn, bool noData);
-extern void ui_speedScreen_setMotorTemp(int tempC, bool warn);
+extern void ui_speedScreen_setInverterTemp(int tempC, bool warn);  // heatsinkTemp (tmphs)
 extern void ui_speedScreen_setPackVoltage(float volts, bool warn, bool noData);
 extern void ui_speedScreen_setPackCurrent(float amps);
 extern void ui_speedScreen_setPower(float kw);
 extern void ui_speedScreen_setAuxVoltage(float volts);
 
 // Moves the gauges' red warning arcs to the Settings thresholds
-// (warningSet.lowSoc / .motorTemp). Cheap; called from slowUpdate().
-extern void ui_speedScreen_setThresholds(int lowSoc, int motorTempWarn);
+// (warningSet.lowSoc / .heatsinkTemp). Cheap; called from slowUpdate().
+extern void ui_speedScreen_setThresholds(int lowSoc, int inverterTempWarn);
 
 // Re-reads odometer.h's totals and updates the labels if the displayed
 // tenth-of-a-mile changed. Called from slowUpdate().

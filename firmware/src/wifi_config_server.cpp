@@ -2,6 +2,7 @@
 #include "vehicle_config.h"
 #include "zombie_updaters.h"  // myData, dataMutex - drive-lockout check
 #include "data_logger.h"
+#include "can_capture.h"
 #include "odometer.h"
 #include "sd_driver.h"
 #include "gps_driver.h"
@@ -192,15 +193,65 @@ static void handleApiLive() {
 }
 
 // --- Data logs (2026-10-21) --------------------------------------------------
-// Only names data_logger.cpp itself produces ("LOG" + 4 digits + ".csv") are
-// accepted - the filename comes straight from the URL, so this is also the
-// path-traversal guard.
+// Only names this firmware itself produces are accepted - "LOG"+4 digits
+// (data_logger.h, in /logs) or "CAN"+4 digits (can_capture.h, in /can,
+// 2026-10-22), + ".csv". The filename comes straight from the URL, so this
+// is also the path-traversal guard.
 static bool isLogName(const String &name) {
-    if (name.length() != 11 || !name.startsWith("LOG") || !name.endsWith(".csv")) return false;
+    if (name.length() != 11 || !name.endsWith(".csv")) return false;
+    if (!name.startsWith("LOG") && !name.startsWith("CAN")) return false;
     for (int i = 3; i < 7; i++) {
         if (!isDigit(name[i])) return false;
     }
     return true;
+}
+
+static String logPath(const String &name) {
+    return String(name.startsWith("CAN") ? CAN_CAPTURE_DIR "/" : DATA_LOGGER_DIR "/") + name;
+}
+
+// Being written right now - flushed before download, never deleted.
+static bool isActiveLog(const String &name) {
+    return name == data_logger_current_file() || name == can_capture_current_file();
+}
+
+static void flushIfActive(const String &name) {
+    if (name == data_logger_current_file()) data_logger_flush();
+    if (name == can_capture_current_file()) can_capture_flush();
+}
+
+// Appends one table row per log file in dirPath. Caller holds sdMutex.
+static int listLogDir(const char *dirPath, String &html) {
+    int count = 0;
+    File dir = SD.open(dirPath);
+    if (dir && dir.isDirectory()) {
+        File f = dir.openNextFile();
+        while (f) {
+            String name = f.name();
+            int slash = name.lastIndexOf('/');
+            if (slash >= 0) name = name.substring(slash + 1);
+            if (!f.isDirectory() && isLogName(name)) {
+                char row[200];
+                snprintf(row, sizeof(row),
+                    "<tr><td><a href='/logs/get?f=%s'>%s</a></td><td>%lu KB</td><td>",
+                    name.c_str(), name.c_str(), (unsigned long)((f.size() + 1023) / 1024));
+                html += row;
+                if (isActiveLog(name)) {
+                    html += "(recording)";
+                } else {
+                    html += "<form method='POST' action='/logs/delete' style='margin:0'>"
+                            "<input type='hidden' name='f' value='" + name + "'>"
+                            "<input type='submit' value='Delete'></form>";
+                }
+                html += "</td></tr>";
+                count++;
+            }
+            f.close();
+            f = dir.openNextFile();
+        }
+    }
+    if (dir) dir.close();
+    return count;
 }
 
 static void handleLogs() {
@@ -213,43 +264,19 @@ static void handleLogs() {
         "<meta name='viewport' content='width=device-width, initial-scale=1'></head><body>"
         "<h2>Data logs</h2><p><a href='/'>Config</a> &middot; <a href='/live'>Live telemetry</a></p>";
     if (vehicleIsMoving()) html += "<p><b>Vehicle is moving - download and delete are locked until stopped.</b></p>";
-    html += "<table>";
-    String active = data_logger_current_file();
-    int count = 0;
+    int logCount = 0, canCount = 0;
+    String logRows, canRows;
     if (xSemaphoreTake(sdMutex, portMAX_DELAY) == pdTRUE) {
-        File dir = SD.open(DATA_LOGGER_DIR);
-        if (dir && dir.isDirectory()) {
-            File f = dir.openNextFile();
-            while (f) {
-                String name = f.name();
-                int slash = name.lastIndexOf('/');
-                if (slash >= 0) name = name.substring(slash + 1);
-                if (!f.isDirectory() && isLogName(name)) {
-                    bool isActive = (name == active);
-                    char row[200];
-                    snprintf(row, sizeof(row),
-                        "<tr><td><a href='/logs/get?f=%s'>%s</a></td><td>%lu KB</td><td>",
-                        name.c_str(), name.c_str(), (unsigned long)((f.size() + 1023) / 1024));
-                    html += row;
-                    if (isActive) {
-                        html += "(recording)";
-                    } else {
-                        html += "<form method='POST' action='/logs/delete' style='margin:0'>"
-                                "<input type='hidden' name='f' value='" + name + "'>"
-                                "<input type='submit' value='Delete'></form>";
-                    }
-                    html += "</td></tr>";
-                    count++;
-                }
-                f.close();
-                f = dir.openNextFile();
-            }
-        }
-        if (dir) dir.close();
+        logCount = listLogDir(DATA_LOGGER_DIR, logRows);
+        canCount = listLogDir(CAN_CAPTURE_DIR, canRows);
         xSemaphoreGive(sdMutex);
     }
-    html += "</table>";
-    if (count == 0) html += "<p>No logs yet - turn on Settings &gt; Data Logging on the dash.</p>";
+    html += "<h3>Telemetry logs</h3>";
+    if (logCount) html += "<table>" + logRows + "</table>";
+    else html += "<p>None yet - turn on Settings &gt; Data Logging on the dash.</p>";
+    html += "<h3>CAN captures (SavvyCAN CSV)</h3>";
+    if (canCount) html += "<table>" + canRows + "</table>";
+    else html += "<p>None yet - Settings &gt; CAN Monitor &gt; START CAPTURE on the dash.</p>";
     html += "</body></html>";
     server.send(200, "text/html", html);
 }
@@ -266,9 +293,9 @@ static void handleLogGet() {
         server.send(404, "text/plain", "Not found");
         return;
     }
-    if (name == data_logger_current_file()) data_logger_flush();
+    flushIfActive(name);
 
-    String path = String(DATA_LOGGER_DIR "/") + name;
+    String path = logPath(name);
     File f;
     if (xSemaphoreTake(sdMutex, portMAX_DELAY) == pdTRUE) {
         f = SD.open(path, FILE_READ);
@@ -303,8 +330,8 @@ static void handleLogDelete() {
         return;
     }
     String name = server.arg("f");
-    if (isLogName(name) && sd_available() && name != data_logger_current_file()) {
-        String path = String(DATA_LOGGER_DIR "/") + name;
+    if (isLogName(name) && sd_available() && !isActiveLog(name)) {
+        String path = logPath(name);
         if (xSemaphoreTake(sdMutex, portMAX_DELAY) == pdTRUE) {
             SD.remove(path);
             xSemaphoreGive(sdMutex);

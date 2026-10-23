@@ -168,9 +168,11 @@ static void notifyPageModules(lv_obj_t *page) {
     ui_settingsVcuParams_page_leave(page);
     ui_settingsDiagnostics_page_leave(page);
     ui_settingsLogging_page_leave(page);
+    ui_settingsCanMonitor_page_leave(page);
     ui_settingsVcuParams_page_enter(page);
     ui_settingsDiagnostics_page_enter(page);
     ui_settingsLogging_page_enter(page);
+    ui_settingsCanMonitor_page_enter(page);
 }
 
 static void menuPageChangedCb(lv_event_t *e) {
@@ -640,6 +642,7 @@ void ui_settingsScreen_screen_init(void)
     // --- VCU Parameters / Diagnostics / Data Logging pages (2026-10-21) ---
     lv_obj_t *vcuParamsPage = ui_settingsVcuParams_create_page(menu);
     lv_obj_t *diagPage = ui_settingsDiagnostics_create_page(menu);
+    lv_obj_t *canMonPage = ui_settingsCanMonitor_create_page(menu);
     lv_obj_t *logPage = ui_settingsLogging_create_page(menu);
 
     // --- Root list page (2026-09-26 sub-page split) ---
@@ -658,6 +661,7 @@ void ui_settingsScreen_screen_init(void)
     createNavRow(rootSection, "Calibration", calPage);
     createNavRow(rootSection, "VCU Parameters", vcuParamsPage);
     createNavRow(rootSection, "Diagnostics", diagPage);
+    createNavRow(rootSection, "CAN Monitor", canMonPage);
     createNavRow(rootSection, "Data Logging", logPage);
 
     // Firmware version - global info, not section-specific, so it stays on
@@ -815,6 +819,7 @@ void ui_settingsScreen_refresh_theme(void)
     ui_settingsVcuParams_refresh_theme();
     ui_settingsDiagnostics_refresh_theme();
     ui_settingsLogging_refresh_theme();
+    ui_settingsCanMonitor_refresh_theme();
     ui_dock_refresh_theme(ui_settingsScreenDock, UI_DOCK_SETTINGS);
     // Section header labels, row title labels, and the +/-/default/cal
     // button chrome are left as their creation-time colors here - this

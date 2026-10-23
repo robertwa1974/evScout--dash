@@ -45,6 +45,11 @@ void ui_settingsDiagnostics_page_leave(lv_obj_t *page);
 void ui_settingsDiagnostics_page_enter(lv_obj_t *page);
 void ui_settingsDiagnostics_refresh_theme(void);
 
+lv_obj_t *ui_settingsCanMonitor_create_page(lv_obj_t *menu);
+void ui_settingsCanMonitor_page_leave(lv_obj_t *page);
+void ui_settingsCanMonitor_page_enter(lv_obj_t *page);
+void ui_settingsCanMonitor_refresh_theme(void);
+
 lv_obj_t *ui_settingsLogging_create_page(lv_obj_t *menu);
 void ui_settingsLogging_page_leave(lv_obj_t *page);
 void ui_settingsLogging_page_enter(lv_obj_t *page);

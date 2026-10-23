@@ -71,6 +71,10 @@ public:
     // Get TWAI status
     twai_status_info_t getStatus();
 
+    // Driver installed and running - false while backed off on a dead bus
+    // (see getAlerts()). Read-only, safe from any task.
+    bool isInitialized() const { return _initialized; }
+
 private:
     bool _initialized = false;
     uint32_t _alerts = TWAI_ALERT_RX_DATA;  // last alertConfigure() mask - restored after a recovery

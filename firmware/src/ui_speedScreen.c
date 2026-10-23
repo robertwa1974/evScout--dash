@@ -10,7 +10,7 @@
 //   x 4..404            x 416..796
 //   +--------------+    [ P ][ R ][ N ][ D ]      y 4..76    shifter strip
 //   |  ODOMETER    |    +--------+ +--------+
-//   |  123.4 mi    |    |  SOC   | | MOTOR  |     y 84..254  needle gauges
+//   |  123.4 mi    |    |  SOC   | |INVERTER|     y 84..254  needle gauges
 //   |     42       |    |  (/)   | |  (/)   |
 //   |    mph       |    +--------+ +--------+
 //   |  TRIP        |
@@ -52,7 +52,11 @@
 #define HALF_W     ((COL_W - GAP) / 2)              // 186
 
 #define SOC_MAX    100
-#define TEMP_MAX   160
+// Inverter (heatsink) temp, not motor temp (Rob, 2026-10-22): the inverter
+// usually derates first and its sensor always reports, while tmpm depends on
+// a separately wired motor thermistor (read -27.7C open on the bench).
+// Motor temp stays on the Status screen; the fault banner warns on both.
+#define TEMP_MAX   120
 
 lv_obj_t * ui_speedScreen = NULL;
 lv_obj_t * ui_speedMeter = NULL;
@@ -301,7 +305,7 @@ void ui_speedScreen_screen_init(void)
 
     // --- Right: SOC + motor temp gauges ------------------------------------
     createGauge(&socGauge, COL_X, "SOC  %", SOC_MAX, 0, 15);
-    createGauge(&tempGauge, COL_X + HALF_W + GAP, "MOTOR  \xC2\xB0" "C", TEMP_MAX, 140, TEMP_MAX);
+    createGauge(&tempGauge, COL_X + HALF_W + GAP, "INVERTER  \xC2\xB0" "C", TEMP_MAX, 85, TEMP_MAX);
 
     // --- Right: cards ---------------------------------------------------------
     createCard(&powerCard, COL_X, CARD_Y, "POWER");
@@ -360,7 +364,7 @@ void ui_speedScreen_setSoc(int soc, bool warn, bool noData)
     setGauge(&socGauge, n, buf, noData ? ui_theme_dim() : (warn ? ui_theme_warning() : ui_theme_text_primary()));
 }
 
-void ui_speedScreen_setMotorTemp(int tempC, bool warn)
+void ui_speedScreen_setInverterTemp(int tempC, bool warn)
 {
     if (ui_speedScreen == NULL) return;
     char buf[16];
@@ -370,11 +374,11 @@ void ui_speedScreen_setMotorTemp(int tempC, bool warn)
     setGauge(&tempGauge, n, buf, noData ? ui_theme_dim() : (warn ? ui_theme_warning() : ui_theme_text_primary()));
 }
 
-void ui_speedScreen_setThresholds(int lowSoc, int motorTempWarn)
+void ui_speedScreen_setThresholds(int lowSoc, int inverterTempWarn)
 {
     if (ui_speedScreen == NULL) return;
     lv_meter_set_indicator_end_value(socGauge.meter, socGauge.zone, lowSoc);
-    lv_meter_set_indicator_start_value(tempGauge.meter, tempGauge.zone, motorTempWarn);
+    lv_meter_set_indicator_start_value(tempGauge.meter, tempGauge.zone, inverterTempWarn);
 }
 
 void ui_speedScreen_setPackVoltage(float volts, bool warn, bool noData)

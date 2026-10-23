@@ -11,6 +11,7 @@
 #include "wifi_config_server.h"
 #include "data_logger.h"
 #include "odometer.h"
+#include "can_capture.h"
 
 // PlatformIO defines UNIT_TEST when building an on-device test (e.g.
 // test_nav_tile, which needs sd_driver.cpp/nav_reader.cpp linked in via
@@ -154,6 +155,11 @@ void loop(void) {
   // Odometer/trip integration + NVS saves (odometer.h) - same "normal task,
   // never a Ticker" rule for flash writes. No uiMutex: no LVGL objects.
   odometer_poll();
+
+  // Raw CAN capture to SD (can_capture.h) - drains the PSRAM ring the CAN
+  // task fills; SD writes only ever from this normal task. Cheap no-op when
+  // no capture is running.
+  can_capture_poll();
 
   vTaskDelay(pdMS_TO_TICKS(5));
 }

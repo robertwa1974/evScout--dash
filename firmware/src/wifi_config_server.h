@@ -15,7 +15,7 @@
 //   /           vehicle_config.h editor (dyno + Home/Work)
 //   /live     * live telemetry, refreshed once a second from /api/live
 //   /api/live * JSON snapshot of myData + GPS
-//   /logs     * data_logger.h CSV files - download / delete
+//   /logs     * data_logger.h CSV logs + can_capture.h CAN captures - download / delete
 //
 // Off by default, toggled from the Settings screen (ui_settingsScreen.cpp's
 // "WiFi Config" row) - the AP does not broadcast at all times while
