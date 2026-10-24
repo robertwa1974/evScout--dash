@@ -14,70 +14,14 @@
 #include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
 #include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
 
-#ifdef JC8048W550C
+// Board: Waveshare ESP32-S3-Touch-LCD-7 only. The upstream uaDASH fork
+// also carried pin blocks for JC8048W550C, Waveshare 5" and Sunton 7"
+// boards - removed 2026-10-23 (never built or tested in this project).
+// WAVESHARE_S3_LCD7 is set in platformio.ini's build_flags.
+#ifndef WAVESHARE_S3_LCD7
+#error "This firmware only supports the Waveshare ESP32-S3-Touch-LCD-7 (-DWAVESHARE_S3_LCD7)"
+#endif
 
-#define LCD_PIN_BACKLIGHT   GPIO_NUM_2
-
-// resolution
-#define LCD_WIDTH   800U
-#define LCD_HEIGHT   480U
-
-#define LCD_PIN_HENABLE     GPIO_NUM_40
-#define LCD_PIN_VSYNC       GPIO_NUM_41
-#define LCD_PIN_HSYNC       GPIO_NUM_39
-#define LCD_PIN_PCLK        GPIO_NUM_42
-
-// RGB565 data pins
-#define LCD_PIN_DATA_R0     GPIO_NUM_45
-#define LCD_PIN_DATA_R1     GPIO_NUM_48
-#define LCD_PIN_DATA_R2     GPIO_NUM_47
-#define LCD_PIN_DATA_R3     GPIO_NUM_21
-#define LCD_PIN_DATA_R4     GPIO_NUM_14
-  
-#define LCD_PIN_DATA_G0     GPIO_NUM_5
-#define LCD_PIN_DATA_G1     GPIO_NUM_6
-#define LCD_PIN_DATA_G2     GPIO_NUM_7
-#define LCD_PIN_DATA_G3     GPIO_NUM_15
-#define LCD_PIN_DATA_G4     GPIO_NUM_16
-#define LCD_PIN_DATA_G5     GPIO_NUM_4
-
-#define LCD_PIN_DATA_B0     GPIO_NUM_8
-#define LCD_PIN_DATA_B1     GPIO_NUM_3
-#define LCD_PIN_DATA_B2     GPIO_NUM_46
-#define LCD_PIN_DATA_B3     GPIO_NUM_9
-#define LCD_PIN_DATA_B4     GPIO_NUM_1
-
-// timing and polarity
-#define LCD_FREQ                16000000U
-#define LCD_PCLK_ACTIVE_NEG     1
-#define LCD_DE_IDLE_HIGH        1
-#define LCD_PCLK_IDLE_HIGH      1
-
-#define LCD_HSYNC_POLARITY      0
-#define LCD_HSYNC_FRONT_PORCH   8
-#define LCD_HSYNC_PULSE_WIDTH   4
-#define LCD_HSYNC_BACK_PORCH    8
-
-#define LCD_VSYNC_POLARITY      0
-#define LCD_VSYNC_FRONT_PORCH   8
-#define LCD_VSYNC_PULSE_WIDTH   4
-#define LCD_VSYNC_BACK_PORCH    8
-
-// touch
-#define TOUCH_XMAX  LCD_WIDTH - 1
-#define TOUCH_YMAX  LCD_HEIGHT - 1
-
-#define TOUCH_PIN_INT   GPIO_NUM_NC
-#define TOUCH_PIN_RST   GPIO_NUM_38
-#define TOUCH_PIN_SDA   GPIO_NUM_19
-#define TOUCH_PIN_SCL   GPIO_NUM_20
-
-#define TOUCH_FREQ      400000U
-#define TOUCH_ROTATION  0
-
-// JC8048W550C end
-
-#elif defined(WAVESHARE_S3_LCD7)
 
 #define LCD_PIN_BACKLIGHT   GPIO_NUM_6
 
@@ -140,136 +84,6 @@
 
 // WAVESHARE_S3_LCD7 end
 
-#elif defined(WAVESHARE_S3_LCD5)
-
-#define LCD_PIN_BACKLIGHT   GPIO_NUM_6
-
-// resolution
-#define LCD_WIDTH   800U
-#define LCD_HEIGHT   480U
-
-#define LCD_PIN_HENABLE     GPIO_NUM_5
-#define LCD_PIN_VSYNC       GPIO_NUM_3
-#define LCD_PIN_HSYNC       GPIO_NUM_46
-#define LCD_PIN_PCLK        GPIO_NUM_7
-
-// RGB565 data pins
-#define LCD_PIN_DATA_R0     GPIO_NUM_1
-#define LCD_PIN_DATA_R1     GPIO_NUM_2
-#define LCD_PIN_DATA_R2     GPIO_NUM_42
-#define LCD_PIN_DATA_R3     GPIO_NUM_41
-#define LCD_PIN_DATA_R4     GPIO_NUM_40
-  
-#define LCD_PIN_DATA_G0     GPIO_NUM_39
-#define LCD_PIN_DATA_G1     GPIO_NUM_0
-#define LCD_PIN_DATA_G2     GPIO_NUM_45
-#define LCD_PIN_DATA_G3     GPIO_NUM_48
-#define LCD_PIN_DATA_G4     GPIO_NUM_47
-#define LCD_PIN_DATA_G5     GPIO_NUM_21
-
-#define LCD_PIN_DATA_B0     GPIO_NUM_14
-#define LCD_PIN_DATA_B1     GPIO_NUM_38
-#define LCD_PIN_DATA_B2     GPIO_NUM_18
-#define LCD_PIN_DATA_B3     GPIO_NUM_17
-#define LCD_PIN_DATA_B4     GPIO_NUM_10
-
-// timing and polarity
-#define LCD_FREQ                16000000U
-#define LCD_PCLK_ACTIVE_NEG     1
-#define LCD_DE_IDLE_HIGH        1
-#define LCD_PCLK_IDLE_HIGH      1
-
-#define LCD_HSYNC_POLARITY      0
-#define LCD_HSYNC_FRONT_PORCH   8
-#define LCD_HSYNC_PULSE_WIDTH   4
-#define LCD_HSYNC_BACK_PORCH    8
-
-#define LCD_VSYNC_POLARITY      0
-#define LCD_VSYNC_FRONT_PORCH   12
-#define LCD_VSYNC_PULSE_WIDTH   4
-#define LCD_VSYNC_BACK_PORCH    8
-
-// touch
-#define TOUCH_XMAX  LCD_WIDTH - 1
-#define TOUCH_YMAX  LCD_HEIGHT - 1
-
-#define TOUCH_PIN_INT   GPIO_NUM_NC
-#define TOUCH_PIN_RST   GPIO_NUM_NC
-#define TOUCH_PIN_SDA   GPIO_NUM_8
-#define TOUCH_PIN_SCL   GPIO_NUM_9
-
-#define TOUCH_FREQ      400000U
-#define TOUCH_ROTATION  0
-
-// WAVESHARE_S3_LCD5 end
-
-#elif defined(Sunton_S3_LCD7)
-
-#define LCD_PIN_BACKLIGHT   GPIO_NUM_2
-
-// resolution
-#define LCD_WIDTH   800U
-#define LCD_HEIGHT   480U
-
-#define LCD_PIN_HENABLE     GPIO_NUM_41
-#define LCD_PIN_VSYNC       GPIO_NUM_40
-#define LCD_PIN_HSYNC       GPIO_NUM_39
-#define LCD_PIN_PCLK        GPIO_NUM_42
-
-// RGB565 data pins
-#define LCD_PIN_DATA_R0     GPIO_NUM_14
-#define LCD_PIN_DATA_R1     GPIO_NUM_21
-#define LCD_PIN_DATA_R2     GPIO_NUM_47
-#define LCD_PIN_DATA_R3     GPIO_NUM_48
-#define LCD_PIN_DATA_R4     GPIO_NUM_45
-
-#define LCD_PIN_DATA_G0     GPIO_NUM_9
-#define LCD_PIN_DATA_G1     GPIO_NUM_46
-#define LCD_PIN_DATA_G2     GPIO_NUM_3
-#define LCD_PIN_DATA_G3     GPIO_NUM_8
-#define LCD_PIN_DATA_G4     GPIO_NUM_16
-#define LCD_PIN_DATA_G5     GPIO_NUM_1
-
-#define LCD_PIN_DATA_B0     GPIO_NUM_15
-#define LCD_PIN_DATA_B1     GPIO_NUM_7
-#define LCD_PIN_DATA_B2     GPIO_NUM_6
-#define LCD_PIN_DATA_B3     GPIO_NUM_5
-#define LCD_PIN_DATA_B4     GPIO_NUM_4
-
-// timing and polarity
-#define LCD_FREQ                14000000U
-#define LCD_PCLK_ACTIVE_NEG     1
-#define LCD_DE_IDLE_HIGH        0
-#define LCD_PCLK_IDLE_HIGH      0
-
-#define LCD_HSYNC_POLARITY      0
-#define LCD_HSYNC_FRONT_PORCH   20
-#define LCD_HSYNC_PULSE_WIDTH   30
-#define LCD_HSYNC_BACK_PORCH    16
-
-#define LCD_VSYNC_POLARITY      0
-#define LCD_VSYNC_FRONT_PORCH   22
-#define LCD_VSYNC_PULSE_WIDTH   13
-#define LCD_VSYNC_BACK_PORCH    10
-
-// touch
-#define TOUCH_XMAX  LCD_WIDTH - 1
-#define TOUCH_YMAX  LCD_HEIGHT - 1
-
-#define TOUCH_PIN_INT   GPIO_NUM_NC
-#define TOUCH_PIN_RST   GPIO_NUM_38
-#define TOUCH_PIN_SDA   GPIO_NUM_19
-#define TOUCH_PIN_SCL   GPIO_NUM_20
-
-#define TOUCH_FREQ      400000U
-#define TOUCH_ROTATION  0
-
-// Sunton_S3_LCD7 end
-
-#else
-#error "Please choose LCD type in config.h"
-#endif
-
 
 
 class LCD_Panel : public lgfx::LGFX_Device {
@@ -289,13 +103,11 @@ extern "C" {
 
 void lcd_panel_start();
 
-#if defined(WAVESHARE_S3_LCD7) || defined(WAVESHARE_S3_LCD5)
 // Asserts SD_CS (CH422G bit4) permanently low - see sd_driver.h for why
 // this is a one-time assert rather than a per-SPI-transaction toggle.
 // Call once, after lcd_panel_start() (that brings up the I2C bus and puts
 // the expander in output mode) and before sd_init().
 void ch422g_assert_sd_cs(void);
-#endif
 
 void setBrightness(int val);
 // Animated backlight fade (styling pass, 2026-09-18, item 11) - genuinely

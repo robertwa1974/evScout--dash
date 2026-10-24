@@ -7,6 +7,7 @@
 #include "sd_driver.h"
 #include "gps_driver.h"
 #include "ui_can_freshness.h"
+#include "wifi_pages.h"
 #include <SD.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
@@ -36,42 +37,114 @@ static bool vehicleIsMoving(void) {
     return moving;
 }
 
-static const char *LOCKED_PAGE =
-    "<html><head><title>Scout 80 Config</title></head><body>"
-    "<h2>Vehicle is moving</h2>"
-    "<p>Configuration is locked while the vehicle is in motion. Stop the vehicle to edit.</p>"
-    "</body></html>";
+// --- Page chrome (2026-10-23 restyle) ----------------------------------------
+// Shared header/nav/footer around every page; styles come from /style.css
+// (wifi_pages.h), served once and cached by the phone.
+static void pageStart(String &html, const char *title, const char *active) {
+    html.reserve(6144);
+    html += "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<meta name='theme-color' content='#111111'><title>";
+    html += title;
+    // Bump ?v= whenever STYLE_CSS changes, so phones drop their cached copy.
+    html += " - Scout 80</title><link rel='stylesheet' href='/style.css?v=1'></head><body>"
+            "<header><div class='brand'>SCOUT <b>80</b></div><nav>";
+    static const char *const LINKS[][2] = {{"/", "Config"}, {"/live", "Live"}, {"/logs", "Logs"}};
+    for (const auto &l : LINKS) {
+        html += "<a href='";
+        html += l[0];
+        html += strcmp(active, l[0]) == 0 ? "' class='on'>" : "'>";
+        html += l[1];
+        html += "</a>";
+    }
+    html += "</nav></header><main>";
+}
+
+static void pageEnd(String &html) {
+    html += "</main><footer>Scout 80 dash &middot; local hotspot " WIFI_CONFIG_SSID
+            " &middot; no internet</footer></body></html>";
+}
+
+// Pages are never cached (2026-10-23): with no cache headers, phone browsers
+// kept showing the old pages after a firmware update. Only the stylesheet is
+// cacheable, and its URL is versioned in pageStart() so a restyle still lands.
+static void sendPage(String &html) {
+    pageEnd(html);
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "text/html; charset=utf-8", html);
+}
+
+static void handleStyle() {
+    server.sendHeader("Cache-Control", "max-age=86400");
+    server.send(200, "text/css", STYLE_CSS);
+}
+
+// One labelled number input: label + hint on the left, input + unit on the right.
+static void field(String &html, const char *label, const char *hint, const char *name,
+                  const char *step, const char *value, const char *unit) {
+    html += "<div class='field'><label for='";
+    html += name;
+    html += "'>";
+    html += label;
+    html += "</label><div class='inp'><input type='number' inputmode='decimal' id='";
+    html += name;
+    html += "' name='";
+    html += name;
+    html += "' step='";
+    html += step;
+    html += "' value='";
+    html += value;
+    html += "'><span class='unit'>";
+    html += unit;
+    html += "</span></div>";
+    if (hint && hint[0]) {
+        html += "<small>";
+        html += hint;
+        html += "</small>";
+    }
+    html += "</div>";
+}
+
+static void fieldF(String &html, const char *label, const char *hint, const char *name,
+                   const char *step, int decimals, double v, const char *unit) {
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%.*f", decimals, v);
+    field(html, label, hint, name, step, buf, unit);
+}
 
 static void handleRoot() {
+    String html;
+    pageStart(html, "Config", "/");
+    html += "<h1>Dash settings</h1>";
     if (vehicleIsMoving()) {
-        server.send(200, "text/html", LOCKED_PAGE);
+        html += "<div class='banner warn'>Vehicle is moving &mdash; settings are locked. "
+                "Stop the vehicle to edit.</div>";
+        sendPage(html);
         return;
     }
+    if (server.hasArg("saved")) html += "<div class='banner ok'>Saved.</div>";
 
-    char page[3000];
-    snprintf(page, sizeof(page),
-        "<html><head><title>Scout 80 Config</title>"
-        "<meta name='viewport' content='width=device-width, initial-scale=1'></head><body>"
-        "<h2>Scout 80 Dash Config</h2>"
-        "<p><a href='/live'>Live telemetry</a> &middot; <a href='/logs'>Data logs</a></p>"
-        "<form method='POST' action='/save'>"
-        "<h3>Dyno</h3>"
-        "Vehicle mass, incl. driver (lbs): <input name='mass' type='number' step='0.1' value='%.1f'><br><br>"
-        "Target speed (mph, run ends here): <input name='target' type='number' step='0.1' value='%.1f'><br><br>"
-        "Launch speed threshold (mph): <input name='launch' type='number' step='0.1' value='%.1f'><br><br>"
-        "Launch IMU threshold (g): <input name='accg' type='number' step='0.01' value='%.2f'><br><br>"
-        "<h3>Destinations</h3>"
-        "Home latitude: <input name='homelat' type='number' step='0.0000001' value='%.7f'><br><br>"
-        "Home longitude: <input name='homelon' type='number' step='0.0000001' value='%.7f'><br><br>"
-        "Work latitude: <input name='worklat' type='number' step='0.0000001' value='%.7f'><br><br>"
-        "Work longitude: <input name='worklon' type='number' step='0.0000001' value='%.7f'><br><br>"
-        "<h3>Odometer</h3>"
-        "Odometer (mi): <input name='odo' type='number' step='0.1' min='0' value='%.1f'><br><br>"
-        "<input type='submit' value='Save'>"
-        "</form></body></html>",
-        dynoVehicleMassKg * KG_TO_LBS, dynoTargetKph * KPH_TO_MPH, dynoLaunchKph * KPH_TO_MPH, dynoLaunchAccelDeltaG,
-        homeLat, homeLon, workLat, workLon, odometer_total_miles());
-    server.send(200, "text/html", page);
+    html += "<form method='POST' action='/save'>";
+    html += "<div class='card'><h2>Dyno</h2>";
+    fieldF(html, "Vehicle mass", "Including driver", "mass", "0.1", 1, dynoVehicleMassKg * KG_TO_LBS, "lbs");
+    fieldF(html, "Target speed", "The run ends here", "target", "0.1", 1, dynoTargetKph * KPH_TO_MPH, "mph");
+    fieldF(html, "Launch speed", "Speed that counts as launched", "launch", "0.1", 1, dynoLaunchKph * KPH_TO_MPH, "mph");
+    fieldF(html, "Launch IMU threshold", "Acceleration that counts as launched", "accg", "0.01", 2, dynoLaunchAccelDeltaG, "g");
+    html += "</div>";
+
+    html += "<div class='card'><h2>Destinations</h2>";
+    fieldF(html, "Home latitude", "", "homelat", "0.0000001", 7, homeLat, "&deg;");
+    fieldF(html, "Home longitude", "", "homelon", "0.0000001", 7, homeLon, "&deg;");
+    fieldF(html, "Work latitude", "", "worklat", "0.0000001", 7, workLat, "&deg;");
+    fieldF(html, "Work longitude", "", "worklon", "0.0000001", 7, workLon, "&deg;");
+    html += "</div>";
+
+    html += "<div class='card'><h2>Odometer</h2>";
+    fieldF(html, "Odometer", "Only changes if you edit it", "odo", "0.1", 1, odometer_total_miles(), "mi");
+    html += "</div>";
+
+    html += "<button class='btn primary' type='submit'>Save</button></form>";
+    sendPage(html);
 }
 
 // Parses arg name into *out if present and within [lo, hi] - silently
@@ -128,40 +201,21 @@ static void handleSave() {
         }
     }
 
-    server.sendHeader("Location", "/");
+    server.sendHeader("Location", "/?saved=1");
     server.send(303);
 }
 
 // --- Live telemetry (2026-10-21) ---------------------------------------------
 // Static page + JSON endpoint rather than server-rendered HTML, so the phone
 // refreshes values without reloading. Read-only, so NOT drive-locked.
-static const char *LIVE_PAGE =
-    "<html><head><title>Scout 80 Live</title>"
-    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-    "<style>body{font-family:sans-serif;background:#111;color:#eee;margin:16px}"
-    "table{border-collapse:collapse;width:100%;max-width:480px}"
-    "td{padding:6px 8px;border-bottom:1px solid #333}td.v{text-align:right;font-weight:bold}"
-    "a{color:#8cf}#s{color:#aaa}</style></head><body>"
-    "<h2>Scout 80 Live</h2><p><a href='/'>Config</a> &middot; <a href='/logs'>Data logs</a></p>"
-    "<p id='s'>Connecting...</p><table id='t'></table>"
-    "<script>"
-    "const L=[['veh_mph','Speed','mph'],['power_kw','Power','kW'],['soc','SOC','%'],"
-    "['pack_v','Pack voltage','V'],['pack_a','Pack current','A'],['motor_rpm','Motor','rpm'],"
-    "['motor_c','Motor temp','&deg;C'],['inverter_c','Inverter temp','&deg;C'],"
-    "['cell_vmax','Cell V max','V'],['cell_vmin','Cell V min','V'],['cell_tmax','Cell T max','&deg;C'],"
-    "['aux_v','12V aux','V'],['opmode','Op mode',''],['last_err','Last error',''],"
-    "['gps_sats','GPS satellites',''],['odo_mi','Odometer','mi'],['trip_mi','Trip','mi'],['logging','Logging','']];"
-    "async function u(){try{const d=await(await fetch('/api/live')).json();"
-    "document.getElementById('s').textContent=d.can_live?'CAN live':'No CAN data';"
-    "document.getElementById('t').innerHTML=L.map(r=>'<tr><td>'+r[1]+'</td><td class=v>'+d[r[0]]+' '+r[2]+'</td></tr>').join('');"
-    "}catch(e){document.getElementById('s').textContent='Dash not reachable';}}"
-    "u();setInterval(u,1000);"
-    "</script></body></html>";
-
 static const char *OPMODE_NAMES[] = {"Off", "Run", "Precharge", "PchFail", "Charge"};
 
 static void handleLive() {
-    server.send(200, "text/html", LIVE_PAGE);
+    String html;
+    pageStart(html, "Live", "/live");
+    html += "<h1>Live telemetry</h1>";
+    html += LIVE_BODY;
+    sendPage(html);
 }
 
 static void handleApiLive() {
@@ -189,6 +243,7 @@ static void handleApiLive() {
         gpsData.hasFix ? gpsData.latitude : 0.0, gpsData.hasFix ? gpsData.longitude : 0.0,
         odometer_total_miles(), odometer_trip_miles(),
         data_logger_is_running() ? data_logger_current_file() : "off");
+    server.sendHeader("Cache-Control", "no-store");
     server.send(200, "application/json", json);
 }
 
@@ -231,17 +286,23 @@ static int listLogDir(const char *dirPath, String &html) {
             int slash = name.lastIndexOf('/');
             if (slash >= 0) name = name.substring(slash + 1);
             if (!f.isDirectory() && isLogName(name)) {
-                char row[200];
+                char row[240];
+                size_t bytes = f.size();
+                char size[16];
+                if (bytes >= 1024UL * 1024UL) snprintf(size, sizeof(size), "%.1f MB", bytes / 1048576.0);
+                else snprintf(size, sizeof(size), "%lu KB", (unsigned long)((bytes + 1023) / 1024));
                 snprintf(row, sizeof(row),
-                    "<tr><td><a href='/logs/get?f=%s'>%s</a></td><td>%lu KB</td><td>",
-                    name.c_str(), name.c_str(), (unsigned long)((f.size() + 1023) / 1024));
+                    "<tr><td class='name'>%s</td><td class='size'>%s</td><td class='act'>"
+                    "<a class='btn sm' href='/logs/get?f=%s'>Download</a>",
+                    name.c_str(), size, name.c_str());
                 html += row;
                 if (isActiveLog(name)) {
-                    html += "(recording)";
+                    html += " <span class='badge'>RECORDING</span>";
                 } else {
-                    html += "<form method='POST' action='/logs/delete' style='margin:0'>"
+                    html += "<form method='POST' action='/logs/delete' "
+                            "onsubmit=\"return confirm('Delete " + name + "?')\">"
                             "<input type='hidden' name='f' value='" + name + "'>"
-                            "<input type='submit' value='Delete'></form>";
+                            "<button class='btn sm danger' type='submit'>Delete</button></form>";
                 }
                 html += "</td></tr>";
                 count++;
@@ -255,15 +316,18 @@ static int listLogDir(const char *dirPath, String &html) {
 }
 
 static void handleLogs() {
+    String html;
+    pageStart(html, "Logs", "/logs");
+    html += "<h1>Logs &amp; captures</h1>";
     if (!sd_available()) {
-        server.send(200, "text/html", "<html><body><h2>Data logs</h2><p>No SD card.</p><p><a href='/'>Back</a></p></body></html>");
+        html += "<div class='banner warn'>No SD card in the dash.</div>";
+        sendPage(html);
         return;
     }
-    String html =
-        "<html><head><title>Scout 80 Logs</title>"
-        "<meta name='viewport' content='width=device-width, initial-scale=1'></head><body>"
-        "<h2>Data logs</h2><p><a href='/'>Config</a> &middot; <a href='/live'>Live telemetry</a></p>";
-    if (vehicleIsMoving()) html += "<p><b>Vehicle is moving - download and delete are locked until stopped.</b></p>";
+    if (vehicleIsMoving()) {
+        html += "<div class='banner warn'>Vehicle is moving &mdash; download and delete are locked "
+                "until it stops.</div>";
+    }
     int logCount = 0, canCount = 0;
     String logRows, canRows;
     if (xSemaphoreTake(sdMutex, portMAX_DELAY) == pdTRUE) {
@@ -271,14 +335,15 @@ static void handleLogs() {
         canCount = listLogDir(CAN_CAPTURE_DIR, canRows);
         xSemaphoreGive(sdMutex);
     }
-    html += "<h3>Telemetry logs</h3>";
+    html += "<div class='card'><h2>Telemetry logs (CSV)</h2>";
     if (logCount) html += "<table>" + logRows + "</table>";
-    else html += "<p>None yet - turn on Settings &gt; Data Logging on the dash.</p>";
-    html += "<h3>CAN captures (SavvyCAN CSV)</h3>";
+    else html += "<p class='empty'>None yet &mdash; turn on Settings &rsaquo; Data Logging on the dash.</p>";
+    html += "</div><div class='card'><h2>CAN captures (SavvyCAN CSV)</h2>";
     if (canCount) html += "<table>" + canRows + "</table>";
-    else html += "<p>None yet - Settings &gt; CAN Monitor &gt; START CAPTURE on the dash.</p>";
-    html += "</body></html>";
-    server.send(200, "text/html", html);
+    else html += "<p class='empty'>None yet &mdash; Settings &rsaquo; CAN Monitor &rsaquo; START CAPTURE on the dash.</p>";
+    html += "</div><p class='hint'>Open captures in SavvyCAN with File &rsaquo; Load Log File "
+            "(GVRET / native CSV).</p>";
+    sendPage(html);
 }
 
 // Streams the file in 2KB chunks, taking sdMutex per chunk (sd_driver.h's
@@ -407,6 +472,7 @@ void wifi_config_server_start(void) {
     static bool routesAdded = false;  // WebServer keeps handlers across stop()/begin()
     if (!routesAdded) {
         server.on("/", HTTP_GET, handleRoot);
+        server.on("/style.css", HTTP_GET, handleStyle);
         server.on("/save", HTTP_POST, handleSave);
         server.on("/live", HTTP_GET, handleLive);
         server.on("/api/live", HTTP_GET, handleApiLive);

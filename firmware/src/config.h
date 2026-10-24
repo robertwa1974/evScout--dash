@@ -2,11 +2,9 @@
 #define DISPLAY_CONFIG_H
 
 // #define DEBUG
+// Board selection moved to platformio.ini (-DWAVESHARE_S3_LCD7) - the
+// upstream multi-board menu that lived here was removed 2026-10-23.
 
-// #define JC8048W550C             // JC8048W550C 5inch C-touch
-// #define WAVESHARE_S3_LCD7       // Waveshare:ESP32-S3-Touch-LCD-7
-// #define WAVESHARE_S3_LCD5       // Waveshare:ESP32-S3-Touch-LCD-5 800x480
-// #define Sunton_S3_LCD7          // Sunton_S3_LCD7 
 
 
 #endif  // HEADER

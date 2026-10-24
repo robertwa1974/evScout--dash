@@ -5,9 +5,32 @@ ESP32-S3-Touch-LCD-7 (800x480). Talks to a **ZombieVerter** EV VCU over
 CANopen SDO — this is not the original rusEFI ICE dashboard project it was
 forked from.
 
-Ten screens: Speed (home, full-screen speedometer + P/N/F/R), Drive,
-Status, Battery, Charging, splash/logo, clock, GPS navigation, 0-60/
-virtual dyno, and settings.
+## What it does
+
+- **Home cluster** — 400px speedometer (mph) with odometer and trip meter,
+  P R N D strip, SOC and inverter-temperature needle gauges, power / pack
+  V / pack A / 12V cards.
+- **Telemetry screens** — Drive (with tap-to-edit gear, motor mode, regen
+  limit and brake regen, mirroring the Zombieverter Dial), Status, Battery
+  (cell-level), Charging, GPS.
+- **Navigation** — GPS NAV with offline vector map tiles and routing to
+  Home / Work / the nearest charging station (offline datasets on the SD
+  card).
+- **0-60 / virtual dyno** — live timer plus a road-load vs. electrical
+  power results chart.
+- **Settings** — warning thresholds, display (day/night, brightness, UTC
+  offset, WiFi), **VCU Parameters** (read/write ZombieVerter tunables over
+  SDO, save to VCU flash), **Diagnostics** (~40 raw VCU values), **Data
+  Logging** (CSV to SD) and a **CAN Monitor** (per-ID bus summary, light
+  decoding of VCU / IVT-S / SimpBMS frames, known-good baseline with
+  NEW / MISSING / RATE flags, raw capture in SavvyCAN CSV format).
+- **Local WiFi hotspot** (`Scout80-Config`, off by default) — config page,
+  live telemetry and log/capture downloads at `http://192.168.4.1`. No
+  internet access; see `CLAUDE.md` → Networking.
+
+Hardware: Waveshare ESP32-S3-Touch-LCD-7 only (the upstream multi-board
+support was removed), microSD card, ZombieVerter VCU on CAN at 500 kbit,
+optional GPS module and MPU6050 IMU.
 
 For the full picture — architecture, hardware list, build-issue history,
 and every design decision along the way — read, in this order:
@@ -39,9 +62,18 @@ pio run -e waveshare-s3-lcd7
 pio run -e waveshare-s3-lcd7 -t upload --upload-port <your COM port>
 ```
 
-A `[env:cantrace]` build is also available for CAN/SDO bench diagnostics
-(verbose serial trace of every frame and SDO transaction) — see
-`waveshare-dash-build.md` for details.
+Other environments:
+
+- `[env:cantrace]` — CAN/SDO bench diagnostics: verbose serial trace of
+  every frame and SDO transaction, plus a once-a-second internal/PSRAM
+  heap line. Keeps UART0 on the USB port at 115200, so crash backtraces
+  are readable (the shipping build hands UART0 to the GPS module).
+- `[env:mock-gps]` — replays a canned GPS route for bench work on the
+  GPS/NAV screens. Note that it also feeds the odometer.
+
+Flashing needs the board's UART DIP switch on **USB** (not GPS). CI
+(`.github/workflows/binary.yaml`) builds the shipping firmware on every
+push and uploads it as an artifact.
 
 **Before flashing**, always confirm the target board's identity:
 

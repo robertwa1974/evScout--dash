@@ -1,13 +1,9 @@
 #include "sd_driver.h"
 
-// Defined unconditionally (not inside the board #if below) so every
-// consumer (ui_splash_truck.cpp, lv_fs_sd.cpp) links against a real
-// mutex regardless of board - see sd_driver.h's comment on sdMutex for
-// why this exists. On the no-op board branch nothing ever actually
-// contends for it, which is harmless.
+// See sd_driver.h's comment on sdMutex for why this exists. (The upstream
+// no-op branch for boards without confirmed SD wiring went with the other
+// board variants, 2026-10-23 - only the Waveshare 7" is supported.)
 SemaphoreHandle_t sdMutex = xSemaphoreCreateMutex();
-
-#if defined(WAVESHARE_S3_LCD7) || defined(WAVESHARE_S3_LCD5)
 
 #include "display_driver.h"
 #include <Arduino.h>
@@ -68,11 +64,3 @@ bool sd_init(void) {
 bool sd_available(void) {
     return sdReady;
 }
-
-#else  // board with no confirmed SD wiring - safe no-op rather than a
-       // guess at pins that might conflict with something else
-
-bool sd_init(void) { return false; }
-bool sd_available(void) { return false; }
-
-#endif

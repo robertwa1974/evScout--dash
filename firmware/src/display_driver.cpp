@@ -89,7 +89,6 @@ LCD_Panel::LCD_Panel(void) {
 LCD_Panel display;
 int brightnessVal = 205;
 
-#if defined(WAVESHARE_S3_LCD7) || defined(WAVESHARE_S3_LCD5)
 // CH422G I/O expander driven directly through LovyanGFX's (legacy-driver) I2C
 // primitives, bypassing ESP32_IO_Expander's C++ wrapper. That wrapper claims
 // ESP-IDF's new i2c_master ("driver_ng") API, which the kernel refuses to run
@@ -124,20 +123,17 @@ static bool ch422gWriteReg(uint8_t addr, uint8_t value) {
 void ch422g_assert_sd_cs(void) {
   ch422gWriteReg(CH422G_ADDR_WR_IO, 0xEF);  // 0xFF with bit4 (SD_CS) cleared
 }
-#endif
 
 void lcd_panel_start() {
 
   ledcAttach(LCD_PIN_BACKLIGHT, 1000, 8);
   ledcWrite(LCD_PIN_BACKLIGHT, brightnessVal);
-#if defined(WAVESHARE_S3_LCD7) || defined(WAVESHARE_S3_LCD5)
   pinMode(4, OUTPUT);
   /* Bring up the CH422G expander directly: TP_RST, LCD_RST and LCD_BL all high */
   lgfx::i2c::init(I2C_NUM_0, 8 /*SDA*/, 9 /*SCL*/);
   ch422gWriteReg(CH422G_ADDR_WR_SET, 0x01);  // all 12 pins -> output mode
   ch422gWriteReg(CH422G_ADDR_WR_IO, 0xFF);   // pins 0-7 HIGH
   delay(100);
-#endif
 
   display.init();
   display.fillScreen(TFT_BLACK);
@@ -167,7 +163,6 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
 }
 
 void setBrightness(int val) {
-// #ifdef JC8048W550C
   if (val <= 55) {
     brightnessVal = 55;
   } else {
@@ -178,7 +173,6 @@ void setBrightness(int val) {
     }
   }
   ledcWrite(LCD_PIN_BACKLIGHT, brightnessVal);
-// #endif
 }
 
 // See display_driver.h for the rationale (styling pass item 11). Dummy
