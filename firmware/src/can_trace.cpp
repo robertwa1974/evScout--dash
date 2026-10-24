@@ -1,4 +1,5 @@
 #include "can_trace.h"
+#include <esp_heap_caps.h>
 
 #ifdef CAN_TRACE
 
@@ -48,6 +49,13 @@ void canTraceDumpMyData(void) {
                   d.soc, d.gear, d.motActive, d.regenMax);
     Serial.printf("  [sdo]   vehSpeedKph=%d  opmode=%d  powerKw=%.2f  lastErr=%d  dcdcState=%d\n",
                   d.vehSpeedKph, d.opmode, d.powerKw, d.lastErr, d.dcdcState);
+    // Internal-RAM watch (2026-10-23): CAN capture's SD.open() aborted in
+    // newlib's lock init = internal heap exhausted - track where it goes.
+    Serial.printf("  [heap]  internal free=%u largest=%u minEver=%u  psram free=%u\n",
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
 
 #endif  // CAN_TRACE

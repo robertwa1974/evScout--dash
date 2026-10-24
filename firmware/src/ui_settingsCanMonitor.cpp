@@ -31,8 +31,9 @@
 //             this page; the status line shows it whenever the page is open.
 //
 // Capture only runs while this page is on screen. One lv_table, rows
-// rewritten in place - same 48KB LVGL heap reasoning as the Diagnostics
-// page; total rows capped at CAN_MONITOR_MAX_IDS.
+// rewritten in place - same widget-count reasoning as the Diagnostics
+// page; total rows capped at CAN_MONITOR_MAX_IDS. Row count only changes
+// through setRowCount() - see its comment for the LVGL bug it avoids.
 // ============================================================================
 
 #include "ui_settings_common.h"
@@ -81,6 +82,22 @@ static uint32_t warmStartMs = 0;
 static can_monitor_row_t live[CAN_MONITOR_MAX_IDS];
 static display_row_t shown[CAN_MONITOR_MAX_IDS];
 static size_t shownCount = 0;
+
+// Resizes the table AND gives every new cell real (empty) storage.
+// LVGL 8.4's lv_table_set_row_cnt() frees removed cells via
+// cell_data[i]->user_data with no NULL check, so shrinking past a cell that
+// was never assigned is a null-pointer crash (found on the bench 2026-10-23:
+// the FLAG column's "" never got written, because lv_table_get_cell_value()
+// reports an unassigned cell as "" too, so setCell() skipped it - then
+// re-entering this page reset the table to 1 row and rebooted the dash).
+static void setRowCount(uint16_t rows) {
+    uint16_t old = lv_table_get_row_cnt(table);
+    if (old == rows) return;
+    lv_table_set_row_cnt(table, rows);
+    for (uint16_t r = old; r < rows; r++) {
+        for (uint16_t c = 0; c < COLS; c++) lv_table_set_cell_value(table, r, c, "");
+    }
+}
 
 static void setCell(uint16_t r, uint16_t c, const char *text) {
     const char *cur = lv_table_get_cell_value(table, r, c);
@@ -237,7 +254,7 @@ static void timerCb(lv_timer_t *t) {
     buildRows(liveCount, &nNew, &nMissing, &nRate);
     updateBaselineLine(nNew, nMissing, nRate);
 
-    if (lv_table_get_row_cnt(table) != shownCount + 1) lv_table_set_row_cnt(table, shownCount + 1);
+    setRowCount(shownCount + 1);
 
     // Changed bytes recolored with LVGL's "#RRGGBB text#" syntax (enabled
     // for the data column in tableDrawCb).
@@ -313,7 +330,7 @@ static void clearCb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     can_monitor_clear();
     warmStartMs = millis();
-    lv_table_set_row_cnt(table, 1);
+    setRowCount(1);
 }
 
 static void saveBaselineCb(lv_event_t *e) {
@@ -463,7 +480,7 @@ void ui_settingsCanMonitor_page_enter(lv_obj_t *page) {
     if (page == NULL || page != canPage) return;
     can_monitor_set_active(true);
     warmStartMs = millis();
-    lv_table_set_row_cnt(table, 1);
+    setRowCount(1);
     if (!timer) timer = lv_timer_create(timerCb, REFRESH_MS, NULL);
 }
 

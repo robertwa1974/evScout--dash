@@ -8,6 +8,7 @@
 #include <esp_timer.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 
 #define RING_FRAMES       4096          // ~1s of a fully loaded 500k bus
 #define WRITE_BUF_SIZE    16384
@@ -102,7 +103,20 @@ bool can_capture_start(void) {
 
     char path[32];
     snprintf(path, sizeof(path), CAN_CAPTURE_DIR "/%s", fileName);
+#if defined(DEBUG) || defined(CAN_TRACE)
+    Serial.printf("[capture] opening %s - internal free=%u largest=%u\n", path,
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+#endif
+    // fopen() aborts (not fails) when it can't allocate its FILE mutex from
+    // internal RAM - refuse up front instead of rebooting the dash.
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < 4096) {
+        fileName[0] = '\0';
+        setStatus("Not enough internal RAM to open a file");
+        return false;
+    }
     bool ok = false;
+    errno = 0;
     if (xSemaphoreTake(sdMutex, portMAX_DELAY) == pdTRUE) {
         if (!SD.exists(CAN_CAPTURE_DIR)) SD.mkdir(CAN_CAPTURE_DIR);
         file = SD.open(path, FILE_WRITE);
@@ -110,7 +124,26 @@ bool can_capture_start(void) {
         if (ok) { file.print(CSV_HEADER); file.flush(); }
         xSemaphoreGive(sdMutex);
     }
-    if (!ok) { fileName[0] = '\0'; setStatus("Can't create capture file"); return false; }
+    if (!ok) {
+        // errno from the VFS/FatFS layer says why (23 = too many open files,
+        // 28 = card full, 5 = I/O error / damaged filesystem) - shown on the
+        // page, since the shipping build logs nothing (CORE_DEBUG_LEVEL=0).
+        int err = errno;
+        char buf[96];
+        uint64_t freeMB = 0;
+        if (xSemaphoreTake(sdMutex, portMAX_DELAY) == pdTRUE) {
+            freeMB = (SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL);
+            xSemaphoreGive(sdMutex);
+        }
+        snprintf(buf, sizeof(buf), "Can't create capture file (errno %d %s, %lu MB free)",
+                 err, strerror(err), (unsigned long)freeMB);
+        setStatus(buf);
+#if defined(DEBUG) || defined(CAN_TRACE)
+        Serial.printf("[capture] %s\n", buf);
+#endif
+        fileName[0] = '\0';
+        return false;
+    }
 
     portENTER_CRITICAL(&lock);
     head = tail = 0;

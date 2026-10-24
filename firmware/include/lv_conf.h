@@ -61,10 +61,12 @@
 
 #else       /*LV_MEM_CUSTOM*/
     // #define LV_MEM_SIZE (256U * 1024U)
-    #define LV_MEM_CUSTOM_INCLUDE <stdlib.h>   /*Header for the dynamic memory function*/
-    #define LV_MEM_CUSTOM_ALLOC   malloc
-    #define LV_MEM_CUSTOM_FREE    free
-    #define LV_MEM_CUSTOM_REALLOC realloc
+    /* PSRAM-first (2026-10-23) - plain malloc put every widget in scarce
+     * internal RAM and starved WiFi/SD/FreeRTOS. See lv_psram_alloc.h. */
+    #define LV_MEM_CUSTOM_INCLUDE "lv_psram_alloc.h"
+    #define LV_MEM_CUSTOM_ALLOC   lv_psram_malloc
+    #define LV_MEM_CUSTOM_FREE    lv_psram_free
+    #define LV_MEM_CUSTOM_REALLOC lv_psram_realloc
 #endif     /*LV_MEM_CUSTOM*/
 
 /*Number of the intermediate memory buffer used during rendering and other internal processing mechanisms.

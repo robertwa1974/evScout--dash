@@ -25,9 +25,11 @@
 // (CAN live, Veh_Speed 0, opmode not Run) - enforced inside sdo_client.cpp,
 // and mirrored here by disabling WRITE/SAVE with the reason shown.
 //
-// One lv_table (not a widget row per param) because LVGL's heap is 48KB
-// (lv_conf.h) and every Settings page is built at once - a table is one
-// object holding short strings.
+// One lv_table (not a widget row per param) because every Settings page is
+// built at once - a table is one object holding short strings, far cheaper
+// than ~40 rows of separate widgets. (LVGL allocates through
+// lv_psram_alloc.h - PSRAM first - since 2026-10-23; before that every
+// widget came out of scarce internal RAM.)
 // ============================================================================
 
 #include "ui_settings_common.h"

@@ -21,6 +21,7 @@ SemaphoreHandle_t sdMutex = xSemaphoreCreateMutex();
 #define SD_CLK  12
 #define SD_MISO 13
 #define SD_FAST_HZ 20000000
+#define SD_MAX_OPEN_FILES 10
 #define SD_SS   -1  // externally managed via the CH422G, not a GPIO the
                      // SD library should try to drive itself
 
@@ -41,10 +42,17 @@ bool sd_init(void) {
     // down to 2.5fps. 20MHz is within the SD spec's 25MHz SPI-mode limit;
     // if a particular card won't mount at that speed, fall back to the old
     // default rather than leave the dash without its card.
-    sdReady = SD.begin(SD_SS, SPI, SD_FAST_HZ);
+    //
+    // Max open files (2026-10-23): the library default is 5, but this
+    // firmware can legitimately hold 6 at once - telemetry log, CAN capture,
+    // GPS NAV's region file, the router's graph file, an LVGL image read,
+    // and a /logs web download - and the 6th open() just fails ("Can't
+    // create capture file" on the bench). Each slot is ~0.5KB of internal
+    // RAM, allocated at mount.
+    sdReady = SD.begin(SD_SS, SPI, SD_FAST_HZ, "/sd", SD_MAX_OPEN_FILES);
     if (!sdReady) {
         SD.end();
-        sdReady = SD.begin(SD_SS);
+        sdReady = SD.begin(SD_SS, SPI, 4000000, "/sd", SD_MAX_OPEN_FILES);
     }
     if (!sdReady) {
         return false;  // no card inserted, or it failed to mount - not a

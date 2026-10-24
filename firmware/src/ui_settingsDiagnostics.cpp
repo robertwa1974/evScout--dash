@@ -10,8 +10,8 @@
 // that are also in the main poll table refresh for free (sdo_client.h).
 // The main telemetry table runs at half rate while this page is open.
 //
-// One lv_table, 4 columns (name | value | name | value) - same 48KB LVGL
-// heap reasoning as ui_settingsVcuParams.cpp. Rows aren't touch targets
+// One lv_table, 4 columns (name | value | name | value) - same widget-count
+// reasoning as ui_settingsVcuParams.cpp. Rows aren't touch targets
 // (nothing to tap), so they're compact rather than 80px.
 // ============================================================================
 

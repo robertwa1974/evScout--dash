@@ -530,6 +530,20 @@ numeral. A secondary live speed/acceleration readout. A state badge
 - Board benchmarks around 26fps for the LVGL benchmark demo single-core
   at PCLK 21MHz per Waveshare's own wiki — budget accordingly, don't
   assume smartphone-class chart/animation performance.
+- **Internal RAM is the scarce resource, not PSRAM** (found 2026-10-23).
+  LVGL allocates through `include/lv_psram_alloc.h` (PSRAM first) — it
+  used plain `malloc`, which the Arduino core serves from internal RAM
+  for small blocks, so opening Settings left ~2KB internal and the next
+  `fopen()` aborted inside newlib (CAN capture start rebooted the dash).
+  Internal RAM is needed by WiFi, FreeRTOS objects and every open SD file
+  — check `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` (the `cantrace`
+  build logs it every second) before adding anything big there.
+- **`lv_table` (LVGL 8.4) crashes when shrunk past a never-assigned
+  cell** (`lv_table_set_row_cnt()` dereferences `cell_data[i]` without a
+  NULL check). Every cell of every row must be explicitly set, even to
+  `""` — and `lv_table_get_cell_value()` reports an unassigned cell as
+  `""`, so a "skip if unchanged" helper will silently leave cells
+  unassigned. See `setRowCount()` in `ui_settingsCanMonitor.cpp`.
 - Never do a full `lv_chart_refresh()` on a live/high-frequency update
   path — that invalidates the whole chart. Only the RESULTS screen chart
   should be drawn, once, after a run completes.
