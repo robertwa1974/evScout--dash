@@ -185,10 +185,16 @@ code:
   and inverter-temp needle gauges (`lv_meter`, red zone follows the
   Settings thresholds; inverter/heatsink rather than motor temp since
   2026-10-22 — it usually derates first and its sensor always reports;
-  motor temp stays on Status), and power / pack V / pack A / 12V cards. Odometer/trip
+  motor temp stays on Status), and power / **range** / pack A / 12V cards
+  (RANGE replaced PACK V 2026-10-24; pack V is on Status/Battery). Odometer/trip
   come from `odometer.h` — the VCU has no distance param, so the dash
   integrates Veh_Speed (GPS fallback) and saves to NVS once per mile +
-  on low-12V shutdown; editable on the WiFi config page.
+  on low-12V shutdown; editable on the WiFi config page. The same module
+  integrates energy from `powerKw` for trip / recent (~10 mi) / lifetime
+  Wh/mi and range (= SOC × the VCU's `BattCap` ÷ recent Wh/mi). Energy
+  only counts with CAN live, not charging, and while moving or within 60 s
+  of moving — so bench/garage time with the VCU in Run can't skew it. The
+  trip's Wh/mi shows in the TRIP caption.
   This is the screen `ui_init()` creates at boot and the one every other
   screen's back-navigation eventually returns to.
 - **Drive**: 2x3 grid (six equal panels) of in-motion telemetry: Power,

@@ -36,6 +36,7 @@
 #include "odometer.h"
 #include "ui_can_freshness.h"
 #include <stdio.h>
+#include <math.h>
 
 #define USABLE_H   (480 - UI_DOCK_H)   // 408
 #define DIAL_SIZE  400
@@ -98,7 +99,11 @@ typedef struct {
 static gauge_t socGauge, tempGauge;
 
 typedef struct { lv_obj_t *panel, *title, *value; } card_t;
-static card_t powerCard, packVCard, packACard, auxCard;
+static card_t powerCard, rangeCard, packACard, auxCard;
+// Last values drawn for the trip-computer readouts - redraw only on change.
+static long shownRange = -2, shownTripWhmi = -2;   // -1 = "--", -2 = never drawn
+static int rangeSoc = -1;
+static float rangeBattKWh = 0;
 
 // --- Small builders ---------------------------------------------------------
 
@@ -309,7 +314,9 @@ void ui_speedScreen_screen_init(void)
 
     // --- Right: cards ---------------------------------------------------------
     createCard(&powerCard, COL_X, CARD_Y, "POWER");
-    createCard(&packVCard, COL_X + HALF_W + GAP, CARD_Y, "PACK V");
+    // RANGE replaced PACK V (2026-10-24) - pack voltage is still on the
+    // Status and Battery screens; range is the more useful glance here.
+    createCard(&rangeCard, COL_X + HALF_W + GAP, CARD_Y, "RANGE");
     createCard(&packACard, COL_X, CARD_Y + CARD_H + GAP, "PACK A");
     createCard(&auxCard, COL_X + HALF_W + GAP, CARD_Y + CARD_H + GAP, "12V AUX");
 
@@ -381,12 +388,10 @@ void ui_speedScreen_setThresholds(int lowSoc, int inverterTempWarn)
     lv_meter_set_indicator_start_value(tempGauge.meter, tempGauge.zone, inverterTempWarn);
 }
 
-void ui_speedScreen_setPackVoltage(float volts, bool warn, bool noData)
+void ui_speedScreen_setRangeInputs(int soc, float battKWh)
 {
-    if (ui_speedScreen == NULL) return;
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%.1f V", volts);
-    setCardValue(&packVCard, buf, noData ? ui_theme_dim() : (warn ? ui_theme_warning() : ui_theme_text_primary()));
+    rangeSoc = soc;
+    rangeBattKWh = battKWh;
 }
 
 static lv_color_t liveColor(void) {
@@ -435,6 +440,30 @@ void ui_speedScreen_refreshOdometer(void)
         snprintf(buf, sizeof(buf), "%ld.%ld mi", (trip / 10) % 10000L, trip % 10);
         lv_label_set_text(tripLabel, buf);
     }
+
+    // Trip efficiency in the caption ("TRIP  312 Wh/mi"), plain "TRIP"
+    // until the trip has enough measured distance (odometer.h).
+    double whmi = odometer_trip_wh_per_mile();
+    long whmiShown = isnan(whmi) ? -1 : lround(whmi);
+    if (whmiShown != shownTripWhmi) {
+        shownTripWhmi = whmiShown;
+        if (whmiShown < 0) lv_label_set_text(tripCaption, "TRIP");
+        else lv_label_set_text_fmt(tripCaption, "TRIP  %ld Wh/mi", whmiShown);
+    }
+
+    // Range: SOC x BattCap / recent Wh/mi - "--" until there's enough data.
+    bool live = ui_can_freshness_hasEverReceived();
+    double range = live ? odometer_range_miles(rangeSoc, rangeBattKWh) : NAN;
+    long rangeShown = isnan(range) ? -1 : lround(range);
+    if (rangeShown != shownRange) {
+        shownRange = rangeShown;
+        if (rangeShown < 0) {
+            setCardValue(&rangeCard, "--", ui_theme_dim());
+        } else {
+            snprintf(buf, sizeof(buf), "%ld mi", rangeShown);
+            setCardValue(&rangeCard, buf, ui_theme_text_primary());
+        }
+    }
 }
 
 // --- Theme ------------------------------------------------------------------
@@ -477,7 +506,7 @@ void ui_speedScreen_refresh_theme(void)
     restyleGauge(&socGauge, SOC_MAX);
     restyleGauge(&tempGauge, TEMP_MAX);
 
-    card_t *cards[4] = {&powerCard, &packVCard, &packACard, &auxCard};
+    card_t *cards[4] = {&powerCard, &rangeCard, &packACard, &auxCard};
     for (int i = 0; i < 4; i++) {
         restylePanel(cards[i]->panel);
         lv_obj_set_style_text_color(cards[i]->title, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -506,7 +535,8 @@ void ui_speedScreen_screen_destroy(void)
     lv_memset_00(&socGauge, sizeof(socGauge));
     lv_memset_00(&tempGauge, sizeof(tempGauge));
     lv_memset_00(&powerCard, sizeof(powerCard));
-    lv_memset_00(&packVCard, sizeof(packVCard));
+    lv_memset_00(&rangeCard, sizeof(rangeCard));
+    shownRange = shownTripWhmi = -2;
     lv_memset_00(&packACard, sizeof(packACard));
     lv_memset_00(&auxCard, sizeof(auxCard));
     activeDir = 0;

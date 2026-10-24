@@ -9,6 +9,7 @@
 #include "ui_can_freshness.h"
 #include "wifi_pages.h"
 #include <SD.h>
+#include <math.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <WebServer.h>
@@ -228,13 +229,21 @@ static void handleApiLive() {
         return;
     }
     const char *opmode = (d.opmode >= 0 && d.opmode <= 4) ? OPMODE_NAMES[d.opmode] : "?";
-    char json[640];
+    // Efficiency (2026-10-24): JSON has no NaN, so "not enough data yet" is -1.
+    double tripWhmi = odometer_trip_wh_per_mile();
+    double recentWhmi = odometer_recent_wh_per_mile();
+    double rangeMi = ui_can_freshness_hasEverReceived() ? odometer_range_miles(d.soc, d.battCapKWh) : NAN;
+    if (isnan(tripWhmi)) tripWhmi = -1;
+    if (isnan(recentWhmi)) recentWhmi = -1;
+    if (isnan(rangeMi)) rangeMi = -1;
+    char json[760];
     snprintf(json, sizeof(json),
         "{\"can_live\":%s,\"veh_mph\":%.0f,\"power_kw\":%.1f,\"soc\":%d,"
         "\"pack_v\":%.1f,\"pack_a\":%.1f,\"motor_rpm\":%d,\"motor_c\":%d,\"inverter_c\":%d,"
         "\"cell_vmax\":%.3f,\"cell_vmin\":%.3f,\"cell_tmax\":%d,\"aux_v\":%.2f,"
         "\"opmode\":\"%s\",\"last_err\":%d,\"gps_fix\":%s,\"gps_sats\":%u,"
-        "\"lat\":%.6f,\"lon\":%.6f,\"odo_mi\":%.1f,\"trip_mi\":%.1f,\"logging\":\"%s\"}",
+        "\"lat\":%.6f,\"lon\":%.6f,\"odo_mi\":%.1f,\"trip_mi\":%.1f,\"logging\":\"%s\","
+        "\"range_mi\":%.0f,\"trip_whmi\":%.0f,\"recent_whmi\":%.0f}",
         ui_can_freshness_isLive() ? "true" : "false",
         d.vehSpeedKph * KPH_TO_MPH, d.powerKw, d.soc,
         d.packVoltage, d.packCurrent, d.motorRpm, d.motorTemp, d.heatsinkTemp,
@@ -242,7 +251,8 @@ static void handleApiLive() {
         opmode, d.lastErr, gpsData.hasFix ? "true" : "false", (unsigned)gpsData.satellites,
         gpsData.hasFix ? gpsData.latitude : 0.0, gpsData.hasFix ? gpsData.longitude : 0.0,
         odometer_total_miles(), odometer_trip_miles(),
-        data_logger_is_running() ? data_logger_current_file() : "off");
+        data_logger_is_running() ? data_logger_current_file() : "off",
+        rangeMi, tripWhmi, recentWhmi);
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "application/json", json);
 }

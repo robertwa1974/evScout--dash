@@ -52,6 +52,31 @@ void odometer_reset_trip(void);
 // Overwrites the total (WiFi config page). Saved on the next poll.
 void odometer_set_total_miles(double miles);
 
+// --- Efficiency and range (2026-10-24) -------------------------------------
+// Energy is integrated from the VCU's power (myData.powerKw; regen is
+// negative) over "measured" distance only: CAN live AND not charging
+// (opmode 4). GPS-only distance and charging don't count, so a plug-in
+// session or a CAN dropout can't distort the figures. Idle draw counts
+// while moving and for 60 s after the last movement (stops at lights), but
+// not a VCU left in Run while parked/on the bench. Saved alongside the
+// odometer; the recent window is RAM-only and refills after a reboot.
+//
+// Each returns NAN until there's enough distance to mean anything.
+
+// Since the last trip reset (reset with odometer_reset_trip()); needs 0.5 mi.
+double odometer_trip_wh_per_mile(void);
+
+// Since the dash first ran this code; needs 1 mi.
+double odometer_lifetime_wh_per_mile(void);
+
+// Last ~10 mi in 0.2 mi segments; falls back to lifetime until 1 mi of
+// recent data exists. This is what drives the range estimate.
+double odometer_recent_wh_per_mile(void);
+
+// SOC x battery capacity / recent Wh/mi, to 0% SOC, capped at 999.
+// battKWh is the VCU's BattCap param (myData.battCapKWh).
+double odometer_range_miles(int socPct, float battKWh);
+
 #ifdef __cplusplus
 }
 #endif

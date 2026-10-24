@@ -31,7 +31,7 @@ void ui_notify_screen_created(void) {
 static void checkAutoTheme();
 
 // --- SDO poll table --------------------------------------------------------
-// All 26 live telemetry params (see the big comment in zombie_updaters.h for
+// All 27 live telemetry params (see the big comment in zombie_updaters.h for
 // why this covers what used to be CAN-broadcast-only fields too).
 struct PollEntry { uint16_t paramId; };
 static const PollEntry pollTable[] = {
@@ -61,6 +61,7 @@ static const PollEntry pollTable[] = {
     {PARAM_ID_PILOTLIM},
     {PARAM_ID_CABLELIM},
     {PARAM_ID_REGENBRAKE},
+    {PARAM_ID_BATTCAP},
 };
 static const size_t pollTableSize = sizeof(pollTable) / sizeof(pollTable[0]);
 static size_t pollCursor = 0;
@@ -121,6 +122,7 @@ static void applySdoValue(uint16_t paramId, int32_t rawValue) {
         case PARAM_ID_PILOTLIM:    myData.pilotLimA     = value;       break;
         case PARAM_ID_CABLELIM:    myData.cableLimA     = value;       break;
         case PARAM_ID_REGENBRAKE:  myData.regenBrake    = value;       break;
+        case PARAM_ID_BATTCAP:     myData.battCapKWh    = value;       break;
         default: break;
     }
 }
@@ -165,7 +167,7 @@ void TaskCANReceiver(void *pvParameters) {
     updateUiFast.attach_ms(PERIOD_FAST_MS, fastUpdate);
     updateUiMid.attach_ms(PERIOD_MID_MS, midUpdate);
     updateUiSlow.attach_ms(PERIOD_SLOW_MS, slowUpdate);
-    sendPoll.attach_ms(PERIOD_SDO_POLL_MS, sendNextPollRequest); // 26-entry table -> ~1300ms full refresh
+    sendPoll.attach_ms(PERIOD_SDO_POLL_MS, sendNextPollRequest); // 27-entry table -> ~1350ms full refresh
     autoThemeTicker.attach_ms(PERIOD_AUTO_THEME_MS, checkAutoTheme);
 #ifdef CAN_TRACE
     traceDump.attach_ms(1000, canTraceDumpMyData);
@@ -568,8 +570,17 @@ void slowUpdate() {
     // actually changed.
     bool canDropout = ui_can_freshness_hasEverReceived() && !ui_can_freshness_isLive();
     bool overTemp = (curMotorTemp >= warningSet.motorTemp) || (curHeatsinkTemp >= warningSet.heatsinkTemp);
+    // Range inputs for the home screen's RANGE card (odometer.h does the math).
+    int rangeSoc = 0;
+    float rangeBatt = 0;
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+        rangeSoc = myData.soc;
+        rangeBatt = myData.battCapKWh;
+        xSemaphoreGive(dataMutex);
+    }
     if (xSemaphoreTake(uiMutex, portMAX_DELAY) == pdTRUE) {
         ui_fault_banner_update(canDropout, overTemp, curLastErr);
+        ui_speedScreen_setRangeInputs(rangeSoc, rangeBatt);
         // Home screen's odometer/trip (odometer.h integrates in loop();
         // this only redraws when the shown tenth changes) and its gauges'
         // warning arcs - every tick, not dirty-checked, both are cheap
@@ -659,7 +670,6 @@ void slowUpdate() {
                 if (noData) ui_card_setValueNoData(ui_statusPackVValLabel, NULL, true);
                 else { ui_card_setValueNoData(ui_statusPackVValLabel, NULL, false); setWarnColor(ui_statusPackVValLabel, warn); }
             }
-            ui_speedScreen_setPackVoltage(volt, warn, noData);
         }
         if (auxVChanged) {
             if (ui_statusAuxVBar) lv_bar_set_value(ui_statusAuxVBar, (int)auxV, LV_ANIM_ON);

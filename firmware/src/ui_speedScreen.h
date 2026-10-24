@@ -31,7 +31,9 @@ extern void ui_speedScreen_setDirState(int dirState);
 // rule as ui_card_setValueNoData()).
 extern void ui_speedScreen_setSoc(int soc, bool warn, bool noData);
 extern void ui_speedScreen_setInverterTemp(int tempC, bool warn);  // heatsinkTemp (tmphs)
-extern void ui_speedScreen_setPackVoltage(float volts, bool warn, bool noData);
+// Inputs for the RANGE card (2026-10-24, replaced PACK V): SOC % and the
+// VCU's BattCap (kWh). Stored only - drawn by refreshOdometer().
+extern void ui_speedScreen_setRangeInputs(int soc, float battKWh);
 extern void ui_speedScreen_setPackCurrent(float amps);
 extern void ui_speedScreen_setPower(float kw);
 extern void ui_speedScreen_setAuxVoltage(float volts);
@@ -40,8 +42,8 @@ extern void ui_speedScreen_setAuxVoltage(float volts);
 // (warningSet.lowSoc / .heatsinkTemp). Cheap; called from slowUpdate().
 extern void ui_speedScreen_setThresholds(int lowSoc, int inverterTempWarn);
 
-// Re-reads odometer.h's totals and updates the labels if the displayed
-// tenth-of-a-mile changed. Called from slowUpdate().
+// Re-reads odometer.h - odometer, trip, trip Wh/mi caption and the RANGE
+// card - redrawing only what changed. Called every slowUpdate() tick.
 extern void ui_speedScreen_refreshOdometer(void);
 
 extern lv_obj_t * ui_speedScreen;

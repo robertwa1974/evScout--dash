@@ -6,6 +6,7 @@
 #include "odometer.h"
 #include <Arduino.h>
 #include <SD.h>
+#include <math.h>
 #include <Preferences.h>
 
 #define BUF_SIZE          4096
@@ -15,7 +16,7 @@
 static const char *CSV_HEADER =
     "ms,utc,gps_fix,lat,lon,gps_kph,veh_kph,motor_rpm,power_kw,pack_v,pack_a,soc,"
     "motor_c,inverter_c,aux_v,cell_vmax,cell_vmin,cell_tmax,opmode,dir,gear,mot_active,"
-    "regen_max,last_err,chg_type,plug_det,ac_v,pilot_a,chg_c,can_live,odo_mi,trip_mi\n";
+    "regen_max,last_err,chg_type,plug_det,ac_v,pilot_a,chg_c,can_live,odo_mi,trip_mi,trip_whmi,recent_whmi\n";
 
 static Preferences preferences;  // own instance, own namespace - same reasoning as vehicle_config.cpp
 
@@ -76,6 +77,12 @@ static void appendRow(void) {
         return;
     }
 
+    // Efficiency columns are blank (not "nan") until there's enough distance.
+    char tripWhmi[12] = "", recentWhmi[12] = "";
+    double tw = odometer_trip_wh_per_mile(), rw = odometer_recent_wh_per_mile();
+    if (!isnan(tw)) snprintf(tripWhmi, sizeof(tripWhmi), "%.0f", tw);
+    if (!isnan(rw)) snprintf(recentWhmi, sizeof(recentWhmi), "%.0f", rw);
+
     char utc[12] = "";
     if (gpsData.year > 2000) {
         snprintf(utc, sizeof(utc), "%02u:%02u:%02u", gpsData.hour, gpsData.minute, gpsData.second);
@@ -84,7 +91,7 @@ static void appendRow(void) {
     int n = snprintf(buf + bufLen, BUF_SIZE - bufLen,
         "%lu,%s,%d,%.6f,%.6f,%.1f,%d,%d,%.2f,%.1f,%.1f,%d,"
         "%d,%d,%.2f,%.3f,%.3f,%d,%d,%d,%d,%d,"
-        "%.1f,%d,%d,%d,%.1f,%.1f,%d,%d,%.2f,%.2f\n",
+        "%.1f,%d,%d,%d,%.1f,%.1f,%d,%d,%.2f,%.2f,%s,%s\n",
         (unsigned long)millis(), utc, gpsData.hasFix ? 1 : 0,
         gpsData.hasFix ? gpsData.latitude : 0.0, gpsData.hasFix ? gpsData.longitude : 0.0,
         gpsData.speedKph,
@@ -93,7 +100,7 @@ static void appendRow(void) {
         d.opmode, d.dirState, d.gear, d.motActive,
         d.regenMax, d.lastErr, d.chgType, d.plugDet, d.acVolts, d.pilotLimA, d.chgTemp,
         ui_can_freshness_isLive() ? 1 : 0,
-        odometer_total_miles(), odometer_trip_miles());
+        odometer_total_miles(), odometer_trip_miles(), tripWhmi, recentWhmi);
     if (n > 0 && (size_t)n < BUF_SIZE - bufLen) {
         bufLen += n;
         rowCount++;
