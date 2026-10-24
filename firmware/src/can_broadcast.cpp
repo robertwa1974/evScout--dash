@@ -20,23 +20,15 @@ static int32_t extractField(const uint8_t *data, uint8_t bitOffset, uint8_t bitL
     return isSigned ? (int32_t)(int16_t)raw : (int32_t)raw;
 }
 
-// Maps a decoded broadcast value to the right myData field by param ID.
-static void applyBroadcastValue(uint16_t paramId, float value) {
-    switch (paramId) {
-        case 2028: myData.heatsinkTemp   = value;       break; // tmphs
-        case 2070: myData.aux12vVoltage  = value;        break; // U12V
-        case 2016: myData.motorRpm       = (int)value;   break; // "speed" - actually motor rpm
-        case 27:   myData.gear           = (int)value;   break;
-        case 129:  myData.motActive      = (int)value;   break;
-        case 61:   myData.regenMax       = value;         break;
-        case 2015: myData.soc            = (int)value;   break;
-        case 2006: myData.packVoltage    = value;         break; // udc
-        case 2012: myData.packCurrent    = value;         break; // idc
-        case 2029: myData.motorTemp      = value;         break; // tmpm
-        default: break; // param not wired to a myData field yet
-    }
-}
-
+// Broadcast values are traced only, never written to myData (2026-10-24).
+// Rob's VCU does send these canmap frames (10 Hz, seen in the truck), but:
+//  - every param here is also SDO-polled at full /32 resolution, and the
+//    broadcast copy overwrote it every 100 ms - with udc at 0.09 gain that's
+//    ~11 V per step, U12V ~11 V per step, rpm ~11 rpm per step;
+//  - the old decode multiplied by the gain instead of dividing (the VCU's
+//    canmap sends value x gain), so udc 366 V showed as 3.2 V and U12V
+//    14.3 V as 0.09 V - caught by the CAN Monitor's shunt-vs-VCU check.
+// SDO stays the single source for myData.
 void decodeBroadcastFrame(uint32_t canId, const uint8_t *data, uint8_t length) {
     for (size_t i = 0; i < kCanBroadcastParamsCount; i++) {
         const CanBroadcastParam &p = kCanBroadcastParams[i];
@@ -47,8 +39,7 @@ void decodeBroadcastFrame(uint32_t canId, const uint8_t *data, uint8_t length) {
         if (byteOffset + fieldBytes > length) continue; // guard against short/malformed frames
 
         int32_t raw = extractField(data, p.byteOffset, p.bitLength, p.isSigned);
-        float value = (float)raw * p.gain;
+        float value = p.gain != 0.0f ? (float)raw / p.gain : (float)raw;  // canmap sends value x gain
         canTraceField(p.name, p.paramId, raw, value, p.unit);
-        applyBroadcastValue(p.paramId, value);
     }
 }

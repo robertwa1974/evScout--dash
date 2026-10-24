@@ -31,6 +31,9 @@ struct CanBroadcastParam {
 //   tmpm/tmphs - can read a few degrees below zero cold-soaked
 // The 0.09 gains look like a truncated repeating decimal in the source
 // params.json; confirm the exact factor against SavvyCAN + the VCU web UI.
+// Truck capture 2026-10-24 (CAN0020.csv): the VCU sends value x gain, e.g.
+// 0x356 udc raw 36 at 366 V, U12V raw 1 at 14.3 V, tmpm raw 17 = 17.8 C.
+// These are decoded for the trace only - see can_broadcast.cpp.
 static const CanBroadcastParam kCanBroadcastParams[] = {
     {"tmphs", 2028, 0x126 /*294*/, 32, 16, true,  1.00f, "°C"},
     {"U12V", 2070, 0x210 /*528*/, 32, 16, false, 0.09f, "V"},
