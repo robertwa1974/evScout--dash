@@ -10,6 +10,14 @@
 #define INCH_KM            0.0000254
 #define DEFAULT_AXLE       3.54f     // Rob's Scout 80 axle (2026-10-24)
 #define DEFAULT_TIRE_IN    31.0f
+#define DEFAULT_TRANSFER   1.00f     // LS600h transfer case: centre diff, no reduction - see speed_cal.h
+
+// LS600h L110F MG2 range reductions - ORNL/TM-2008/185 "Evaluation of the
+// 2008 Lexus LS 600h Hybrid Synergy Drive System" (osti.gov/biblio/947393),
+// section 2.3, p.41: LOW = 87-tooth ring held, 30-tooth sun in, carrier out
+// = 1 + 87/30 = 3.90 (exact from tooth counts); HIGH = "about 1.9" (the
+// report gives no exact tooth path for it - GPS calibration pins it down).
+static const float RANGE_REDUCTION[2] = {3.90f, 1.90f};
 
 // GPS calibration acceptance (see speed_cal.h).
 #define CAL_SAMPLE_MS      200
@@ -19,14 +27,14 @@
 #define CAL_MIN_RPM        300
 #define CAL_GPS_MAX_AGE_MS 1500
 #define CAL_MAX_SPREAD     0.04      // reject if K varied by more than 4% (std/mean)
-#define REDUCTION_MIN      0.3f      // implied reduction outside this = bad calibration
-#define REDUCTION_MAX      20.0f
+#define CAL_MAX_DEVIATION  0.25f     // reject if >25% off the expected ratio - wrong range or bad data
 
 static Preferences prefs;  // own instance, own namespace - same reasoning as vehicle_config.cpp
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 
 static float axleRatio = DEFAULT_AXLE;
 static float tireInches = DEFAULT_TIRE_IN;
+static float transferRatio = DEFAULT_TRANSFER;
 static float k[2];          // kph per motor rpm, per range
 static bool calibrated[2];
 
@@ -37,16 +45,18 @@ static int calCount = 0;
 static double calSum = 0, calSumSq = 0;
 static char status[120] = "";
 
-// K for a given overall reduction: kph = rpm / (axle * reduction) * tire circumference * 60.
-static float kForReduction(float reduction) {
+// K for a given range reduction:
+//   kph = rpm / (range reduction x transfer x axle) x tire circumference x 60
+static float kForReduction(float rangeReduction) {
     double circKm = M_PI * tireInches * INCH_KM;
-    return (float)(circKm * 60.0 / (axleRatio * reduction));
+    return (float)(circKm * 60.0 / (axleRatio * transferRatio * rangeReduction));
 }
 
 static void save(void) {
     prefs.begin("spdcal", false);
     prefs.putFloat("axle", axleRatio);
     prefs.putFloat("tire", tireInches);
+    prefs.putFloat("xfer", transferRatio);
     prefs.putFloat("k0", k[0]);
     prefs.putFloat("k1", k[1]);
     prefs.putBool("cal0", calibrated[0]);
@@ -54,24 +64,35 @@ static void save(void) {
     prefs.end();
 }
 
-static void resetToEstimate(void) {
+// Uncalibrated ranges are always derived from the current settings, never
+// read back from NVS - so changing a default (or fixing one, as when the
+// 1.00:1 placeholder became the ORNL 3.90/1.90 on 2026-10-24) takes effect.
+static void refreshEstimates(void) {
     portENTER_CRITICAL(&lock);
-    k[0] = k[1] = kForReduction(1.0f);
+    for (int r = 0; r < 2; r++) {
+        if (!calibrated[r]) k[r] = kForReduction(RANGE_REDUCTION[r]);
+    }
+    portEXIT_CRITICAL(&lock);
+}
+
+static void resetCalibration(void) {
+    portENTER_CRITICAL(&lock);
     calibrated[0] = calibrated[1] = false;
     portEXIT_CRITICAL(&lock);
+    refreshEstimates();
 }
 
 void speed_cal_init(void) {
     prefs.begin("spdcal", true);
     axleRatio = prefs.getFloat("axle", DEFAULT_AXLE);
     tireInches = prefs.getFloat("tire", DEFAULT_TIRE_IN);
-    bool have = prefs.isKey("k0");
+    transferRatio = prefs.getFloat("xfer", DEFAULT_TRANSFER);
     k[0] = prefs.getFloat("k0", 0);
     k[1] = prefs.getFloat("k1", 0);
-    calibrated[0] = prefs.getBool("cal0", false);
-    calibrated[1] = prefs.getBool("cal1", false);
+    calibrated[0] = prefs.getBool("cal0", false) && k[0] > 0;
+    calibrated[1] = prefs.getBool("cal1", false) && k[1] > 0;
     prefs.end();
-    if (!have || k[0] <= 0 || k[1] <= 0) resetToEstimate();
+    refreshEstimates();
 }
 
 int speed_cal_range_for(int gearFb, int dirState) {
@@ -90,18 +111,27 @@ float speed_cal_kph(int motorRpm, int range) {
 
 float speed_cal_axle_ratio(void) { return axleRatio; }
 float speed_cal_tire_inches(void) { return tireInches; }
+float speed_cal_transfer_ratio(void) { return transferRatio; }
+float speed_cal_nominal_reduction(int range) { return RANGE_REDUCTION[range == SPEED_RANGE_LOW ? 0 : 1]; }
 
 void speed_cal_set_axle_ratio(float ratio) {
     if (ratio < 1.0f || ratio > 9.0f) return;
     axleRatio = ratio;
-    resetToEstimate();
+    resetCalibration();
     save();
 }
 
 void speed_cal_set_tire_inches(float inches) {
     if (inches < 20.0f || inches > 45.0f) return;
     tireInches = inches;
-    resetToEstimate();
+    resetCalibration();
+    save();
+}
+
+void speed_cal_set_transfer_ratio(float ratio) {
+    if (ratio < 0.5f || ratio > 5.0f) return;
+    transferRatio = ratio;
+    resetCalibration();
     save();
 }
 
@@ -109,6 +139,7 @@ bool speed_cal_is_calibrated(int range) {
     return calibrated[range == SPEED_RANGE_LOW ? 0 : 1];
 }
 
+// The range (MG2) reduction a K implies, with axle, transfer and tire factored out.
 float speed_cal_implied_reduction(int range) {
     int r = (range == SPEED_RANGE_LOW) ? 0 : 1;
     portENTER_CRITICAL(&lock);
@@ -188,8 +219,12 @@ void speed_cal_poll(void) {
         return;
     }
     float reduction = kForReduction(1.0f) / (float)mean;
-    if (reduction < REDUCTION_MIN || reduction > REDUCTION_MAX) {
-        fail("Result implausible - check axle ratio / tire size and GPS");
+    float expected = RANGE_REDUCTION[calRange];
+    if (fabsf(reduction - expected) / expected > CAL_MAX_DEVIATION) {
+        char why[120];
+        snprintf(why, sizeof(why), "Measured %.2f:1, expected ~%.2f:1 - check GearFB, axle, tire, transfer",
+                 reduction, expected);
+        fail(why);
         return;
     }
     portENTER_CRITICAL(&lock);
@@ -198,8 +233,8 @@ void speed_cal_poll(void) {
     portEXIT_CRITICAL(&lock);
     save();
     calState = SPEED_CAL_DONE;
-    snprintf(status, sizeof(status), "%s range calibrated - implied reduction %.2f:1",
-             calRange == SPEED_RANGE_LOW ? "LOW" : "HIGH", reduction);
+    snprintf(status, sizeof(status), "%s range calibrated - measured %.2f:1 (nominal %.2f:1)",
+             calRange == SPEED_RANGE_LOW ? "LOW" : "HIGH", reduction, expected);
 }
 
 const char *speed_cal_status_text(void) {

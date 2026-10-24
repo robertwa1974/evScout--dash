@@ -392,11 +392,11 @@ void ui_speedScreen_setThresholds(int lowSoc, int inverterTempWarn)
 void ui_speedScreen_setSpeedCalibrated(bool calibrated)
 {
     if (ui_speedScreen == NULL || ui_speedUnitLabel == NULL) return;
-    const char *t = calibrated ? "mph" : "mph - uncalibrated";
+    // Quiet note, not a warning (2026-10-24): with the ORNL range ratios the
+    // estimate is within a few % - calibration only refines it.
+    const char *t = calibrated ? "mph" : "mph - estimated";
     if (strcmp(lv_label_get_text(ui_speedUnitLabel), t) == 0) return;
     lv_label_set_text(ui_speedUnitLabel, t);
-    lv_obj_set_style_text_color(ui_speedUnitLabel, calibrated ? ui_theme_text_secondary() : ui_theme_bad(),
-                                LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
 void ui_speedScreen_setRangeInputs(int soc, float battKWh)

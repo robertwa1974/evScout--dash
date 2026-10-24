@@ -21,7 +21,7 @@
 static const float KPH_TO_MPH = 0.621371f;
 
 static lv_obj_t *calPageRef = NULL;
-static lv_obj_t *axleSpin = NULL, *tireSpin = NULL;
+static lv_obj_t *axleSpin = NULL, *tireSpin = NULL, *xferSpin = NULL;
 static lv_obj_t *liveLabel = NULL, *rangesLabel = NULL, *calStatusLabel = NULL;
 static lv_obj_t *calBtn = NULL, *calBtnLabel = NULL;
 static lv_timer_t *timer = NULL;
@@ -44,14 +44,14 @@ static void updateStatus(void) {
     char buf[200];
     snprintf(buf, sizeof(buf), "Now: %s range (GearFB %d) - motor %d rpm = %.0f mph%s",
              range == SPEED_RANGE_LOW ? "LOW" : "HIGH", gearFb, rpm, kph * KPH_TO_MPH,
-             speed_cal_is_calibrated(range) ? "" : "  (uncalibrated)");
+             speed_cal_is_calibrated(range) ? "" : "  (estimated)");
     setLabel(liveLabel, buf);
 
     char lo[64], hi[64];
     for (int r = 0; r < 2; r++) {
         char *dst = r == 0 ? lo : hi;
-        if (speed_cal_is_calibrated(r)) snprintf(dst, 64, "calibrated, %.2f:1 reduction", speed_cal_implied_reduction(r));
-        else snprintf(dst, 64, "uncalibrated (assumes 1.00:1)");
+        if (speed_cal_is_calibrated(r)) snprintf(dst, 64, "GPS-calibrated, measured %.2f:1", speed_cal_implied_reduction(r));
+        else snprintf(dst, 64, "estimated from %.2f:1 (ORNL)", speed_cal_nominal_reduction(r));
     }
     snprintf(buf, sizeof(buf), "LOW: %s\nHIGH: %s", lo, hi);
     setLabel(rangesLabel, buf);
@@ -71,8 +71,10 @@ static void timerCb(lv_timer_t *t) {
 static void applySteppers(void) {
     float axle = lv_spinbox_get_value(axleSpin) / 100.0f;
     float tire = lv_spinbox_get_value(tireSpin) / 10.0f;
+    float xfer = lv_spinbox_get_value(xferSpin) / 100.0f;
     if (fabsf(axle - speed_cal_axle_ratio()) > 0.001f) speed_cal_set_axle_ratio(axle);
     if (fabsf(tire - speed_cal_tire_inches()) > 0.01f) speed_cal_set_tire_inches(tire);
+    if (fabsf(xfer - speed_cal_transfer_ratio()) > 0.001f) speed_cal_set_transfer_ratio(xfer);
     updateStatus();
 }
 
@@ -124,7 +126,7 @@ static void onDelete(lv_event_t *e) {
     (void)e;
     if (timer) lv_timer_del(timer);
     timer = NULL;
-    calPageRef = axleSpin = tireSpin = liveLabel = rangesLabel = calStatusLabel = calBtn = calBtnLabel = NULL;
+    calPageRef = axleSpin = tireSpin = xferSpin = liveLabel = rangesLabel = calStatusLabel = calBtn = calBtnLabel = NULL;
 }
 
 void ui_settingsSpeedCal_build(lv_obj_t *page, lv_obj_t *section) {
@@ -133,15 +135,21 @@ void ui_settingsSpeedCal_build(lv_obj_t *page, lv_obj_t *section) {
     lv_obj_t *head = infoLabel(section, &font_montserrat_extrabold_16, ui_theme_text_primary());
     lv_label_set_text(head, "Road speed (from motor rpm)");
     lv_obj_t *hint = infoLabel(section, &font_montserrat_semibold_16, ui_theme_text_secondary());
-    lv_label_set_text(hint, "The VCU doesn't report road speed, so the dash computes it. Calibrate each "
-                            "range (LOW and HIGH) once with GPS. Changing axle or tire resets calibration.");
+    lv_label_set_text(hint, "The VCU doesn't report road speed, so the dash computes it from motor rpm and "
+                            "the LS600h range ratios (LOW 3.90, HIGH ~1.9). GPS calibration per range makes "
+                            "it exact. Changing axle, tire or transfer ratio resets calibration.");
 
     axleSpin = ui_settings_create_stepper_row(section, "Axle ratio", 100, 900,
                                               (int32_t)lroundf(speed_cal_axle_ratio() * 100), 3, 1);
     tireSpin = ui_settings_create_stepper_row(section, "Tire diameter (in)", 200, 450,
                                               (int32_t)lroundf(speed_cal_tire_inches() * 10), 3, 2);
+    // Transfer case reduction (2026-10-24): 1.00 for the LS600h (centre diff,
+    // no reduction) - a setting so other drivetrains can use this too.
+    xferSpin = ui_settings_create_stepper_row(section, "Transfer case ratio", 50, 500,
+                                              (int32_t)lroundf(speed_cal_transfer_ratio() * 100), 3, 1);
     wire(axleSpin);
     wire(tireSpin);
+    wire(xferSpin);
 
     liveLabel = infoLabel(section, &font_montserrat_semibold_16, ui_theme_text_primary());
     rangesLabel = infoLabel(section, &font_montserrat_semibold_16, ui_theme_text_primary());
@@ -184,8 +192,8 @@ void ui_settingsSpeedCal_page_enter(lv_obj_t *page) {
 
 void ui_settingsSpeedCal_refresh_theme(void) {
     if (!calPageRef) return;
-    lv_obj_t *spins[2] = {axleSpin, tireSpin};
-    for (int i = 0; i < 2; i++) {
+    lv_obj_t *spins[3] = {axleSpin, tireSpin, xferSpin};
+    for (int i = 0; i < 3; i++) {
         lv_obj_set_style_bg_color(spins[i], ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_text_color(spins[i], ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     }

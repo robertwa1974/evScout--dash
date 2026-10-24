@@ -36,8 +36,8 @@ extern void ui_speedScreen_setInverterTemp(int tempC, bool warn);  // heatsinkTe
 extern void ui_speedScreen_setRangeInputs(int soc, float battKWh);
 
 // Whether road speed for the engaged range is GPS-calibrated (speed_cal.h).
-// Uncalibrated speed reads high by the unknown transaxle reduction, so the
-// unit label says so (2026-10-24).
+// Uncalibrated, it's estimated from the LS600h range ratios - the unit label
+// says "mph - estimated" (2026-10-24).
 extern void ui_speedScreen_setSpeedCalibrated(bool calibrated);
 extern void ui_speedScreen_setPackCurrent(float amps);
 extern void ui_speedScreen_setPower(float kw);

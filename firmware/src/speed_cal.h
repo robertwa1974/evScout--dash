@@ -17,15 +17,18 @@
 //
 // The LS600h L110F transaxle has a two-speed MG2 reduction (Lo / Hi range -
 // the VCU's Gear LOW/HIGH/AUTO), so there are two K values, picked from the
-// VCU's GearFB (2047). The reduction ratios themselves aren't known, so K is
-// measured: "Calibrate from GPS" averages GPS speed / motor rpm while
-// driving steadily, separately for whichever range is engaged. That one
-// number absorbs the reduction, any transfer-case ratio, the axle and the
-// real rolling diameter.
+// VCU's GearFB (2047). Nominal reductions from ORNL/TM-2008/185 (2008 LS 600h
+// teardown, section 2.3): LOW 3.90:1 (exact, from tooth counts), HIGH ~1.9:1.
+// The LS600h transfer case is a planetary centre differential, not a
+// reduction, so its ratio defaults to 1.00:1 - it's a setting anyway for
+// other drivetrains.
 //
-// Until a range is calibrated its K comes from the axle ratio and tire
-// diameter assuming a 1.00 reduction - shown as "uncalibrated". Changing
-// the axle or tire setting resets both ranges to that estimate.
+// Until a range is GPS-calibrated, K is ESTIMATED from those ratios plus
+// axle and tire (typically a few % high: a tire's loaded rolling diameter is
+// smaller than nominal). "Calibrate from GPS" averages GPS speed / motor rpm
+// while driving steadily, per range, and stores the measured K - it absorbs
+// rolling diameter and confirms the HIGH ratio. Changing axle, tire or
+// transfer ratio resets both ranges to the estimate.
 //
 // Settings live in NVS (namespace "spdcal"). speed_cal_poll() runs the GPS
 // calibration and must be called from loop() (it reads gpsData).
@@ -56,13 +59,18 @@ int speed_cal_range_for(int gearFb, int dirState);
 
 float speed_cal_axle_ratio(void);
 float speed_cal_tire_inches(void);
-// Both persist and reset the GPS calibration of both ranges.
+float speed_cal_transfer_ratio(void);
+// All three persist and reset the GPS calibration of both ranges.
 void speed_cal_set_axle_ratio(float ratio);
 void speed_cal_set_tire_inches(float inches);
+void speed_cal_set_transfer_ratio(float ratio);
+
+// The published reduction for a range (3.90 LOW / 1.90 HIGH).
+float speed_cal_nominal_reduction(int range);
 
 bool speed_cal_is_calibrated(int range);
-// Overall reduction between motor and axle implied by a range's K
-// (i.e. the transaxle/transfer-case ratio, axle ratio factored out).
+// The range (MG2) reduction implied by a range's K, with axle, transfer
+// ratio and tire factored out - comparable to speed_cal_nominal_reduction().
 float speed_cal_implied_reduction(int range);
 
 // GPS calibration - start from the UI, then poll() from loop().

@@ -193,10 +193,13 @@ code:
   computed on the dash** (`speed_cal.h`, 2026-10-24): the VCU's
   `Veh_Speed` is never set with Vehicle = Classic (only BMW vehicle
   classes write it), so `myData.vehSpeedKph` = |motor rpm| × K, with one
-  K per LS600h MG2 range (LOW/HIGH, from `GearFB`), measured by
-  Settings › Calibration › CALIBRATE FROM GPS. Uncalibrated it assumes a
-  1.00:1 reduction and reads high — the home screen's unit label says
-  "mph - uncalibrated" until the engaged range is calibrated. The same module
+  K per LS600h MG2 range (LOW/HIGH, from `GearFB`). Until GPS-calibrated
+  (Settings › Calibration › CALIBRATE FROM GPS), K is estimated from the
+  range reductions in ORNL/TM-2008/185 (LS 600h teardown: LOW 3.90:1
+  exact, HIGH ~1.9:1) × transfer case ratio (default 1.00 — the LS600h
+  case is a centre diff, not a reduction; it's a setting for other
+  drivetrains) × axle × tire; the home screen's unit label says
+  "mph - estimated" until the engaged range is calibrated. The same module
   integrates energy from `powerKw` for trip / recent (~10 mi) / lifetime
   Wh/mi and range (= SOC × the VCU's `BattCap` ÷ recent Wh/mi). Energy
   only counts with CAN live, not charging, and while moving or within 60 s
