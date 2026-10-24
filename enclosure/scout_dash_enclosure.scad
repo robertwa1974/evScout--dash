@@ -3,13 +3,19 @@
 //  Base case: VaAndCob/ESP32-S3-Mastermind  waveshare7_3D/waveshare_7_case.stl (MIT)
 //
 //  Parts (pick with PART below, F6 render, then File > Export > STL):
-//    "case"     original back shell + front bezel flange (+ optional cable hole)
-//    "carrier"  rear retainer / carrier: clamps the dash panel from behind and
-//               holds the GY-NEO6MV2 GPS board and GY-521 IMU between itself
-//               and the case back (boards face the case floor, protected)
-//    "pod"      GPS patch-antenna pod (25x25 ceramic patch, faces up) —
-//               stick or screw it wherever it can see the sky
+//    "case"     original back shell + front bezel flange
+//    "box"      board box: GY-NEO6MV2 GPS + GY-521 IMU clip in; stuck to the case
+//               back with VHB; wire window + antenna-lead notches
+//    "lid"      screw-on lid for the box (2x M3 self-tapping)
+//    "clamps"   two separate clamp bars: each drops over two hex standoffs and
+//               pinches the dash panel against the bezel (one STL, print both)
+//    "pod"      GPS patch-antenna pod (25x25 ceramic patch, faces up)
 //    "assembly" everything in place, with a ghost dash panel (preview only)
+//    ("tray" / "carrier" = superseded v4 parts, kept for reference)
+//
+//  Bench: standoffs in, boards wired into the box, lid on, box stuck on the case back.
+//  Car:   slide case in from the front, drop each clamp bar over its two standoffs,
+//         2 screws per bar. The box stays exposed in the middle.
 //
 //  Coordinate frame = original STL:
 //    X = width (-98.5..98.5), Y = height (0..115), Z = depth.
@@ -17,7 +23,7 @@
 //  All dimensions in mm.
 // =====================================================================
 
-PART = "assembly";            // "case" | "carrier" | "pod" | "assembly"
+PART = "assembly";            // "case" | "tray" | "carrier" | "pod" | "assembly"
 CASE_STL = "waveshare_7_case.stl";
 
 $fn = 48;
@@ -54,41 +60,48 @@ screw_hole_d   = 3.0;   // 3.0 = M3 screw self-threads into the print and stays 
 
 // ---------------- carrier / retainer ----------------
 rail_w        = 12;     // width of the two vertical rails (centred on the screw holes)
-back_web      = 3.5;    // carrier material between socket bottom and screw head
-rail_t        = max(10, standoff_len + socket_extra + back_web); // = crossbar, back prints flat
+back_web      = 3.5;    // carrier material under the screw head (counterbored if thicker)
+cover_roof    = 2.5;    // carrier material over the board cavity
 foot_reach    = 9.5;    // foot length along Y, beyond the cut-out edge
 foot_margin   = 3;      // gap between foot inner face and the cut-out edge
 preload       = 0.3;    // feet stop this short of the panel so tightening clamps it
-bar_t         = rail_t; // centre crossbar thickness (holds the boards)
 bridge_y      = [45.5, 77.5]; // left rail arches over the side port window (y 48..75)
 bridge_gap    = 4;      // clearance under that arch for USB plug boots
 bar_y0        = 73.5;   // crossbar bottom edge (clears the floor slot at x 44..51.5)
 bar_y0_left   = 76;     // ...and left of x = -27 (clears the big port window, y <= 75)
 bar_y1        = 105;    // top edge (clears the open recess at x -15..24, y >= 106.5)
 
-// ---------------- GY-NEO6MV2 GPS board ----------------
-gps_pcb       = [36.80, 25.75]; // measured
-gps_c         = [-8, 90];  // centre on the case back (X,Y)
-gps_top_clear = 3.0;        // room for NEO-6M chip / u.FL on the side facing the case
-gps_bot_clear = 3.0;        // room for backup battery / pads on the other side
-
-// ---------------- GY-521 MPU-6050 IMU ----------------
-imu_pcb       = [20.55, 15.80]; // measured
-imu_c         = [31, 90];
-imu_top_clear = 2.0;
-imu_bot_clear = 3.0;
-
+// ---------------- board tray ----------------
+gps_pcb       = [36.45, 26.10]; // measured (re-checked); long side along X, 4-pin header end toward the wiring hole
+gps_c         = [-11, 86.5];    // pocket centre on the case back (X,Y)
+imu_pcb       = [15.80, 20.55]; // measured, turned 90°: 8-pin header edge faces the wiring hole
+imu_c         = [26, 86.5];
 pcb_t         = 1.6;
-pcb_clear     = 0.4;    // total XY clearance in the pocket
-ledge         = 1.5;    // width of the ledge the PCB edge sits on
+pcb_clear     = 0.8;    // total XY clearance in each pocket (0.4 per side; FDM pockets print undersize)
+ledge         = 1.5;    // PCB seat width around the pocket
+tray_base     = 1.0;    // floor under the relief
+relief        = 2.0;    // space under each PCB for solder joints (solder wires, not header pins)
+lip_above     = 0.8;    // wall height above the PCB top face
+snap          = 0.45;   // snap-lip overhang that holds each PCB in
+tray_wall     = 2.5;
+vhb_t         = 1.1;    // tray-to-case bond thickness (3M 5952 VHB ~1.1; 0 for epoxy/CA)
+comp_clear    = 6.0;    // headroom above the PCB tops (NEO-6M, backup cell, u.FL + plug)
+cover_clear   = 1.0;    // XY clearance between tray and the carrier's cover cavity
+pad_gap       = 0.2;    // carrier pads stop this far off the tray walls
 
 // ---------------- wiring ----------------
-case_cable_hole = true;      // add a hole through the case floor for GPS/IMU wiring
-cable_hole_c    = [15, 90];  // under the carrier crossbar, between the two boards
-cable_hole_d    = 10;        // passes a JST-PH/SH plug
-chan_w          = 5;  chan_d = 2.5;   // wire channels on the carrier front face
-coax_exit       = true;      // channel from the GPS pocket to the carrier top edge for the
-                             //   antenna coax (u.FL) — needs a u.FL extension to reach the pod
+// Wires leave through the case's existing connector cutouts (UART1 / I2C), so there is
+// no hole in the case floor. Both boards' header ends face a shared channel between the
+// pockets, which exits through the tray's lower edge and a notch in the carrier.
+case_cable_hole = false;        // legacy floor hole (off)
+cable_hole_c    = [6.5, 86.5];  // only used if case_cable_hole = true
+cable_hole_d    = 8;
+wire_x          = 12.75;        // centre of the shared wire channel / exit (between the pockets)
+wire_gap        = 10;           // openings in the pocket walls facing the channel
+exit_w          = 9;            // width of the exit through the tray's lower wall
+notch_h         = 4;            // height of the carrier notch the wires pass under
+coax_exit       = true;         // channel from the cavity to the carrier top edge for the GPS coax
+chan_w          = 5;  chan_d = 2.5;
 
 // ---------------- antenna pod ----------------
 patch         = [25, 25, 4.5]; // ceramic patch incl. adhesive; some are 8 mm thick
@@ -130,10 +143,76 @@ module case_mod() {
             import(CASE_STL, convexity = 10);
             flange();
         }
-        if (case_cable_hole)
-            translate([cable_hole_c[0], cable_hole_c[1], case_z0 - 1])
-                cylinder(d = cable_hole_d, h = 4);
+        if (case_cable_hole) translate([cable_hole_c[0], cable_hole_c[1], case_z0 - 1])
+            cylinder(d = cable_hole_d, h = 4);
     }
+}
+
+// ---------------- tray ----------------
+function pk(pcb) = [pcb[0] + pcb_clear, pcb[1] + pcb_clear];
+tray_h  = tray_base + relief + pcb_t + lip_above;
+tray_x0 = min(gps_c[0] - pk(gps_pcb)[0]/2, imu_c[0] - pk(imu_pcb)[0]/2) - tray_wall;
+tray_x1 = max(gps_c[0] + pk(gps_pcb)[0]/2, imu_c[0] + pk(imu_pcb)[0]/2) + tray_wall;
+tray_y0 = min(gps_c[1] - pk(gps_pcb)[1]/2, imu_c[1] - pk(imu_pcb)[1]/2) - tray_wall;
+tray_y1 = max(gps_c[1] + pk(gps_pcb)[1]/2, imu_c[1] + pk(imu_pcb)[1]/2) + tray_wall;
+tray_z0 = case_z0 - vhb_t;               // tray face that bonds to the case
+tray_z_top = tray_z0 - tray_h;           // open (rear) face of the tray
+
+// tray modelled in its print orientation: base on z = 0, pockets open upward
+module tray_pocket(c, pcb, toward_hole) {
+    P = pk(pcb);
+    translate([c[0] - tray_x0, c[1] - tray_y0, 0]) {
+        // PCB pocket from the seat up
+        translate([-P[0]/2, -P[1]/2, tray_base + relief]) cube([P[0], P[1], tray_h]);
+        // relief under the PCB
+        translate([-P[0]/2 + ledge, -P[1]/2 + ledge, tray_base]) cube([P[0] - 2*ledge, P[1] - 2*ledge, relief + 0.01]);
+        // wire opening toward the hole (full height, down to the floor)
+        translate([toward_hole > 0 ? P[0]/2 - 1 : -P[0]/2 - tray_wall - 1, -wire_gap/2, tray_base])
+            cube([tray_wall + 2, wire_gap, tray_h]);
+        // fingernail notch on the far end
+        translate([toward_hole > 0 ? -P[0]/2 : P[0]/2, 0, tray_base + relief]) cylinder(d = 8, h = tray_h);
+    }
+}
+
+module tray_snaps(c, pcb) {
+    // small lips on the two long walls, just above the PCB top
+    P = pk(pcb);
+    along_x = P[0] >= P[1];
+    L = along_x ? P[0] : P[1];
+    for (s = [-1, 1])
+        translate([c[0] - tray_x0, c[1] - tray_y0, tray_base + relief + pcb_t + 0.1])
+            rotate([0, 0, along_x ? 0 : 90])
+                translate([-L/4, s * ((along_x ? P[1] : P[0])/2) - (s > 0 ? snap : 0), 0])
+                    hull() {
+                        cube([L/2, snap, 0.01]);
+                        translate([0, s > 0 ? snap : 0, lip_above - 0.11]) cube([L/2, 0.01, 0.01]);
+                    }
+}
+
+module tray() {
+    W = tray_x1 - tray_x0;  H = tray_y1 - tray_y0;
+    difference() {
+        linear_extrude(tray_h) rrect([W, H], 2);
+        tray_pocket(gps_c, gps_pcb, sign(wire_x - gps_c[0]));
+        tray_pocket(imu_c, imu_pcb, sign(wire_x - imu_c[0]));
+        // wiring hole through the tray floor, lined up with the case hole
+        // wire channel joining both pockets to the hole
+        // (floor stays solid: it seals any old hole in the case behind the tray)
+        cx0 = gps_c[0] + pk(gps_pcb)[0]/2 - 1;
+        cx1 = imu_c[0] - pk(imu_pcb)[0]/2 + 1;
+        translate([cx0 - tray_x0, gps_c[1] - tray_y0 - wire_gap/2, tray_base])
+            cube([cx1 - cx0, wire_gap, tray_h]);
+        // exit straight down through the tray's lower wall
+        translate([wire_x - exit_w/2 - tray_x0, -1, tray_base])
+            cube([exit_w, gps_c[1] - tray_y0 + 1, tray_h]);
+    }
+    tray_snaps(gps_c, gps_pcb);
+    tray_snaps(imu_c, imu_pcb);
+}
+
+// tray as installed on the case back (for the assembly view / checks)
+module tray_installed() {
+    translate([tray_x0, tray_y0, tray_z0]) mirror([0, 0, 1]) tray();
 }
 
 // ---------------- carrier ----------------
@@ -146,21 +225,15 @@ foot_in1 = cut_y1 + foot_margin;
 rail_y0  = foot_in0 - foot_reach;
 rail_y1  = foot_in1 + foot_reach;
 
-module pocket(c, pcb, top_clear, bot_clear) {
-    // open toward the case (front face of the carrier, Z = case_z0)
-    L = pcb[0] + pcb_clear;  W = pcb[1] + pcb_clear;
-    ledge_z = case_z0 - top_clear - pcb_t;   // Z of the face the PCB rests on
-    translate([c[0], c[1], 0]) {
-        // full-size pocket down to the PCB seat
-        translate([-L/2, -W/2, ledge_z]) cube([L, W, -ledge_z + case_z0 + 1]);
-        // reduced pocket below the seat for bottom-side parts
-        translate([-L/2 + ledge, -W/2 + ledge, ledge_z - bot_clear])
-            cube([L - 2*ledge, W - 2*ledge, bot_clear + 0.01]);
-        // fingernail notches to lift the board out
-        for (s = [-1, 1]) translate([s * L/2, 0, ledge_z - 1])
-            cylinder(d = 8, h = -ledge_z + case_z0 + 2);
-    }
-}
+cav_depth = vhb_t + tray_h - lip_above + comp_clear;   // from the case back
+rail_t   = max(10, standoff_len + socket_extra + back_web, cav_depth + cover_roof);
+bar_t    = rail_t;                                  // flat back for printing
+cbore_d  = 6.5;
+cbore_h  = rail_t - (standoff_len + socket_extra) - back_web;   // keeps M3 x 8 screws
+
+cav_x0 = tray_x0 - cover_clear;  cav_x1 = tray_x1 + cover_clear;
+cav_y0 = tray_y0 - cover_clear;  cav_y1 = tray_y1 + cover_clear;
+bar2_x0 = cav_x0 - 2;  bar2_y0 = cav_y0 - 2;     // lower crossbar section around the cavity
 
 module carrier() {
     xs = [holes[0][0], holes[1][0]];           // rail centre lines
@@ -169,23 +242,25 @@ module carrier() {
             // two rails
             for (x = xs) translate([x - rail_w/2, rail_y0, case_z0 - rail_t])
                 cube([rail_w, rail_y1 - rail_y0, rail_t]);
-            // feet + gussets
+            // feet
             for (x = xs) for (end = [0, 1]) {
                 y_in  = end == 0 ? foot_in0 : foot_in1;
                 y_out = end == 0 ? rail_y0  : rail_y1;
                 translate([x - rail_w/2, min(y_in, y_out), case_z0 - rail_t])
                     cube([rail_w, abs(y_out - y_in), foot_z1 - case_z0 + rail_t]);
             }
-            // centre crossbar carrying the boards
+            // crossbar (cover)
             translate([xs[0] + rail_w/2 - 0.01, bar_y0_left, case_z0 - bar_t])
                 cube([xs[1] - xs[0] - rail_w + 0.02, bar_y1 - bar_y0_left, bar_t]);
             translate([-27, bar_y0, case_z0 - bar_t])
                 cube([xs[1] - rail_w/2 + 27 + 0.01, bar_y1 - bar_y0, bar_t]);
+            translate([bar2_x0, bar2_y0, case_z0 - bar_t])
+                cube([cav_x1 + 2 - bar2_x0, bar_y1 - bar2_y0, bar_t]);
         }
         // arch over the side port window
         translate([xs[0] - rail_w/2 - 1, bridge_y[0], case_z0 - bridge_gap])
             cube([rail_w + 2, bridge_y[1] - bridge_y[0], bridge_gap + 1]);
-        // screw holes + counterbores from the back
+        // standoff sockets, screw holes, counterbores
         for (h = holes) translate([h[0], h[1], 0]) {
             sock_d = standoff_af / cos(30) + socket_clear;
             sock_h = standoff_len + socket_extra;
@@ -193,22 +268,111 @@ module carrier() {
             translate([0, 0, case_z0 - sock_h]) cylinder(d = sock_d, h = sock_h + 1);
             translate([0, 0, case_z0 - lead_in])
                 cylinder(d1 = sock_d, d2 = sock_d + 2*lead_in + 0.02, h = lead_in + 0.01);
+            if (cbore_h > 0.2)
+                translate([0, 0, case_z0 - bar_t - 1]) cylinder(d = cbore_d, h = cbore_h + 1);
         }
-        pocket(gps_c, gps_pcb, gps_top_clear, gps_bot_clear);
-        pocket(imu_c, imu_pcb, imu_top_clear, imu_bot_clear);
-        // wire channels on the front face: each pocket -> cable hole
-        for (c = [gps_c, imu_c]) hull() {
-            translate([c[0], c[1], case_z0 - chan_d]) cylinder(d = chan_w, h = chan_d + 1);
-            translate([cable_hole_c[0], cable_hole_c[1], case_z0 - chan_d])
-                cylinder(d = chan_w, h = chan_d + 1);
+        // cover cavity over the tray, leaving 4 corner pads that bear on the tray walls
+        difference() {
+            translate([cav_x0, cav_y0, case_z0 - cav_depth]) cube([cav_x1 - cav_x0, cav_y1 - cav_y0, cav_depth + 1]);
+            pad_z = tray_z_top - pad_gap;   // pad faces stop just short of the tray rim
+            for (px = [tray_x0, tray_x1 - 6]) for (py = [tray_y0, tray_y1 - 6])
+                translate([px, py, case_z0 - cav_depth - 1]) cube([6, 6, pad_z - (case_z0 - cav_depth - 1)]);
         }
-        // landing for the cable hole
-        translate([cable_hole_c[0], cable_hole_c[1], case_z0 - chan_d])
-            cylinder(d = cable_hole_d, h = chan_d + 1);
-        // coax exit to the top edge
-        if (coax_exit) hull() {
-            translate([gps_c[0] - 12, gps_c[1], case_z0 - chan_d]) cylinder(d = chan_w, h = chan_d + 1);
-            translate([gps_c[0] - 12, bar_y1 + 1, case_z0 - chan_d]) cylinder(d = chan_w, h = chan_d + 1);
+        // wire exit: notch through the cavity's lower wall, toward the connector cutouts
+        translate([wire_x - exit_w/2, bar2_y0 - 1, case_z0 - notch_h])
+            cube([exit_w, cav_y0 - bar2_y0 + 2, notch_h + 1]);
+        // coax exit from the cavity to the top edge
+        if (coax_exit) translate([gps_c[0] - 12 - chan_w/2, cav_y1 - 1, case_z0 - chan_d])
+            cube([chan_w, bar_y1 - cav_y1 + 2, chan_d + 1]);
+    }
+}
+
+// ---------------- v5: standalone board box + lid, separate clamp bars ----------------
+// The box is the tray with walls carried up to full height and a screw-on lid. It is
+// stuck to the case back with VHB and sits in the open between the two clamp bars,
+// so the GPS, IMU and antenna lead stay reachable without removing anything.
+box_h     = tray_base + relief + pcb_t + comp_clear;   // wall top above the box floor
+lid_t     = 2.0;
+lip_h     = 2.0;     // lid lip that drops inside the walls
+lip_w     = 1.2;
+lid_clear = 0.3;     // gap between lip and wall
+ear_d     = 8;       // lid screw ears on the two short ends
+ear_out   = 2.5;     // ear centre this far outside the wall
+pilot_d   = 2.5;     // M3 self-tapping pilot (use 2.2 for M2.5)
+win_w     = 11;      // wire window in the lower wall: passes a JST-PH 4-pin plug
+win_h     = 6;
+coax_w    = 4;       // antenna-lead notches in the upper wall (closed over by the lid)
+coax_d    = 3;
+coax_xs   = [gps_c[0] - 12, gps_c[0] + 12];
+clamp_t   = max(10, standoff_len + socket_extra + back_web);
+
+module box_outline(grow = 0) { offset(delta = grow) rrect([tray_x1 - tray_x0, tray_y1 - tray_y0], 2); }
+function ear_pos() = [[-ear_out, (tray_y1 - tray_y0)/2], [tray_x1 - tray_x0 + ear_out, (tray_y1 - tray_y0)/2]];
+
+// print orientation: floor on the bed, opening up
+module box_base() {
+    difference() {
+        union() {
+            tray();
+            translate([0, 0, tray_h - 0.01]) linear_extrude(box_h - tray_h + 0.01)
+                difference() { box_outline(); box_outline(-tray_wall); }
+            for (e = ear_pos()) translate([e[0], e[1], 0]) cylinder(d = ear_d, h = box_h);
+        }
+        // wire window through the lower wall, lined up with the tray's wire exit
+        translate([wire_x - tray_x0 - win_w/2, -1, tray_base]) cube([win_w, tray_wall + 2, win_h]);
+        // antenna-lead notches in the upper wall
+        for (cx = coax_xs) translate([cx - tray_x0 - coax_w/2, tray_y1 - tray_y0 - tray_wall - 1, box_h - coax_d])
+            cube([coax_w, tray_wall + 2, coax_d + 1]);
+        // lid screw pilots
+        for (e = ear_pos()) translate([e[0], e[1], 1]) cylinder(d = pilot_d, h = box_h);
+    }
+}
+
+// print orientation: outer face on the bed, lip up
+module box_lid() {
+    difference() {
+        union() {
+            linear_extrude(lid_t) union() {
+                box_outline();
+                for (e = ear_pos()) translate(e) circle(d = ear_d);
+            }
+            translate([0, 0, lid_t - 0.01]) linear_extrude(lip_h + 0.01) difference() {
+                box_outline(-(tray_wall + lid_clear));
+                box_outline(-(tray_wall + lid_clear + lip_w));
+            }
+        }
+        for (e = ear_pos()) translate([e[0], e[1], -1]) cylinder(d = 3.4, h = lid_t + 2);
+        // gaps in the lip at the antenna-lead notches
+        for (cx = coax_xs) translate([cx - tray_x0 - 3, tray_y1 - tray_y0 - tray_wall - lid_clear - lip_w - 1, lid_t])
+            cube([6, lip_w + 2, lip_h + 1]);
+    }
+}
+
+module box_installed() { translate([tray_x0, tray_y0, case_z0 - vhb_t]) mirror([0, 0, 1]) box_base(); }
+module lid_installed() { translate([tray_x0, tray_y0, case_z0 - vhb_t - box_h - lid_t]) box_lid(); }
+
+// two independent clamp bars, each located by two standoffs
+module clamps() {
+    xs = [holes[0][0], holes[1][0]];
+    for (i = [0, 1]) let (x = xs[i]) difference() {
+        union() {
+            translate([x - rail_w/2, rail_y0, case_z0 - clamp_t]) cube([rail_w, rail_y1 - rail_y0, clamp_t]);
+            for (end = [0, 1]) {
+                y_in  = end == 0 ? foot_in0 : foot_in1;
+                y_out = end == 0 ? rail_y0  : rail_y1;
+                translate([x - rail_w/2, min(y_in, y_out), case_z0 - clamp_t])
+                    cube([rail_w, abs(y_out - y_in), foot_z1 - case_z0 + clamp_t]);
+            }
+        }
+        if (i == 0) translate([x - rail_w/2 - 1, bridge_y[0], case_z0 - bridge_gap])
+            cube([rail_w + 2, bridge_y[1] - bridge_y[0], bridge_gap + 1]);
+        for (h = holes) if (abs(h[0] - x) < 1) translate([h[0], h[1], 0]) {
+            sock_d = standoff_af / cos(30) + socket_clear;
+            sock_h = standoff_len + socket_extra;
+            translate([0, 0, case_z0 - clamp_t - 1]) cylinder(d = screw_hole_d, h = clamp_t + 2);
+            translate([0, 0, case_z0 - sock_h]) cylinder(d = sock_d, h = sock_h + 1);
+            translate([0, 0, case_z0 - lead_in])
+                cylinder(d1 = sock_d, d2 = sock_d + 2*lead_in + 0.02, h = lead_in + 0.01);
         }
     }
 }
@@ -246,11 +410,17 @@ module ghost_panel() {
 }
 
 if (PART == "case")          case_mod();
-else if (PART == "carrier")  carrier();
+else if (PART == "box")      box_base();
+else if (PART == "lid")      box_lid();
+else if (PART == "clamps")   clamps();
 else if (PART == "pod")      pod();
-else {
+else if (PART == "tray")     tray();        // v4, superseded by box
+else if (PART == "carrier")  carrier();     // v4, superseded by clamps
+else if (PART == "assembly") {
     color("DarkOrange") case_mod();
-    color("SteelBlue") carrier();
+    color("Gold") box_installed();
+    color("Khaki") lid_installed();
+    color("SteelBlue") clamps();
     color("SeaGreen") translate([0, case_h + 30, 0]) rotate([90, 0, 0]) pod();
     ghost_panel();
 }
@@ -259,4 +429,6 @@ else {
 echo(str("Dash cut-out: 203.2 (existing width) x ", case_h + 2*cut_clear, " mm, R12 corners"));
 echo(str("Bezel outer size: ", case_w + 2*flange_w, " x ", case_h + 2*flange_w, " mm"));
 echo(str("Panel rear face at Z=", panel_back_z, "; feet stop at Z=", foot_z1));
-echo(str("Carrier screws: M3 x ", ceil(rail_t - standoff_len - socket_extra + 4), " (", rail_t - standoff_len - socket_extra, " mm of carrier + ~4.5 mm thread engagement)"));
+echo(str("Clamp bars: ", clamp_t, " mm thick; screws M3 x 8"));
+echo(str("Box: ", tray_x1 - tray_x0, " x ", tray_y1 - tray_y0, " x ", box_h + lid_t, " mm with lid (", box_h + lid_t + vhb_t, " mm off the case back incl. VHB)"));
+echo(str("Tray: ", tray_x1 - tray_x0, " x ", tray_y1 - tray_y0, " x ", tray_h, " mm"));
