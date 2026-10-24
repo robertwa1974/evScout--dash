@@ -169,10 +169,12 @@ static void notifyPageModules(lv_obj_t *page) {
     ui_settingsDiagnostics_page_leave(page);
     ui_settingsLogging_page_leave(page);
     ui_settingsCanMonitor_page_leave(page);
+    ui_settingsSpeedCal_page_leave(page);
     ui_settingsVcuParams_page_enter(page);
     ui_settingsDiagnostics_page_enter(page);
     ui_settingsLogging_page_enter(page);
     ui_settingsCanMonitor_page_enter(page);
+    ui_settingsSpeedCal_page_enter(page);
 }
 
 static void menuPageChangedCb(lv_event_t *e) {
@@ -617,6 +619,7 @@ void ui_settingsScreen_screen_init(void)
     lv_obj_set_style_bg_color(calPage, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
     calSection = lv_menu_section_create(calPage);
+    ui_settingsSpeedCal_build(calPage, calSection);   // road-speed calibration (2026-10-24)
     lv_obj_t *calRow = lv_menu_cont_create(calSection);
     lv_obj_set_height(calRow, ROW_HEIGHT);
     lv_obj_t *calLabel = lv_label_create(calRow);
@@ -820,6 +823,7 @@ void ui_settingsScreen_refresh_theme(void)
     ui_settingsDiagnostics_refresh_theme();
     ui_settingsLogging_refresh_theme();
     ui_settingsCanMonitor_refresh_theme();
+    ui_settingsSpeedCal_refresh_theme();
     ui_dock_refresh_theme(ui_settingsScreenDock, UI_DOCK_SETTINGS);
     // Section header labels, row title labels, and the +/-/default/cal
     // button chrome are left as their creation-time colors here - this

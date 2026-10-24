@@ -52,6 +52,14 @@ void ui_settingsCanMonitor_page_leave(lv_obj_t *page);
 void ui_settingsCanMonitor_page_enter(lv_obj_t *page);
 void ui_settingsCanMonitor_refresh_theme(void);
 
+// Road-speed calibration rows, built INTO the existing Calibration page
+// (ui_settingsSpeedCal.cpp, 2026-10-24) - so build() takes the page and
+// section rather than creating its own.
+void ui_settingsSpeedCal_build(lv_obj_t *page, lv_obj_t *section);
+void ui_settingsSpeedCal_page_leave(lv_obj_t *page);
+void ui_settingsSpeedCal_page_enter(lv_obj_t *page);
+void ui_settingsSpeedCal_refresh_theme(void);
+
 lv_obj_t *ui_settingsLogging_create_page(lv_obj_t *menu);
 void ui_settingsLogging_page_leave(lv_obj_t *page);
 void ui_settingsLogging_page_enter(lv_obj_t *page);

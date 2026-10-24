@@ -188,8 +188,15 @@ code:
   motor temp stays on Status), and power / **range** / pack A / 12V cards
   (RANGE replaced PACK V 2026-10-24; pack V is on Status/Battery). Odometer/trip
   come from `odometer.h` — the VCU has no distance param, so the dash
-  integrates Veh_Speed (GPS fallback) and saves to NVS once per mile +
-  on low-12V shutdown; editable on the WiFi config page. The same module
+  integrates road speed (GPS fallback) and saves to NVS every 0.25 mi and
+  3 s after stopping; editable on the WiFi config page. **Road speed is
+  computed on the dash** (`speed_cal.h`, 2026-10-24): the VCU's
+  `Veh_Speed` is never set with Vehicle = Classic (only BMW vehicle
+  classes write it), so `myData.vehSpeedKph` = |motor rpm| × K, with one
+  K per LS600h MG2 range (LOW/HIGH, from `GearFB`), measured by
+  Settings › Calibration › CALIBRATE FROM GPS. Uncalibrated it assumes a
+  1.00:1 reduction and reads high — the home screen's unit label says
+  "mph - uncalibrated" until the engaged range is calibrated. The same module
   integrates energy from `powerKw` for trip / recent (~10 mi) / lifetime
   Wh/mi and range (= SOC × the VCU's `BattCap` ÷ recent Wh/mi). Energy
   only counts with CAN live, not charging, and while moving or within 60 s

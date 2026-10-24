@@ -37,6 +37,7 @@
 #include "ui_can_freshness.h"
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 
 #define USABLE_H   (480 - UI_DOCK_H)   // 408
 #define DIAL_SIZE  400
@@ -386,6 +387,16 @@ void ui_speedScreen_setThresholds(int lowSoc, int inverterTempWarn)
     if (ui_speedScreen == NULL) return;
     lv_meter_set_indicator_end_value(socGauge.meter, socGauge.zone, lowSoc);
     lv_meter_set_indicator_start_value(tempGauge.meter, tempGauge.zone, inverterTempWarn);
+}
+
+void ui_speedScreen_setSpeedCalibrated(bool calibrated)
+{
+    if (ui_speedScreen == NULL || ui_speedUnitLabel == NULL) return;
+    const char *t = calibrated ? "mph" : "mph - uncalibrated";
+    if (strcmp(lv_label_get_text(ui_speedUnitLabel), t) == 0) return;
+    lv_label_set_text(ui_speedUnitLabel, t);
+    lv_obj_set_style_text_color(ui_speedUnitLabel, calibrated ? ui_theme_text_secondary() : ui_theme_bad(),
+                                LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
 void ui_speedScreen_setRangeInputs(int soc, float battKWh)

@@ -12,6 +12,7 @@
 #include "data_logger.h"
 #include "odometer.h"
 #include "can_capture.h"
+#include "speed_cal.h"
 
 // PlatformIO defines UNIT_TEST when building an on-device test (e.g.
 // test_nav_tile, which needs sd_driver.cpp/nav_reader.cpp linked in via
@@ -58,6 +59,7 @@ void setup(void) {
                         // must happen before any screen reading them is built
   wifi_config_server_init();  // loads the saved on/off pref and starts the AP
                                // if it was left on (see wifi_config_server.h)
+  speed_cal_init();    // road speed from motor rpm (speed_cal.h) - before the CAN task starts using it
   odometer_init();     // saved odometer/trip from NVS - before ui_init() builds the home screen
   data_logger_init();  // resumes CSV logging into a new file if it was left
                         // on - needs sd_init() done first (data_logger.h)
@@ -160,6 +162,9 @@ void loop(void) {
   // task fills; SD writes only ever from this normal task. Cheap no-op when
   // no capture is running.
   can_capture_poll();
+
+  // GPS speed calibration sampling (speed_cal.h) - reads gpsData, so loop() only.
+  speed_cal_poll();
 
   vTaskDelay(pdMS_TO_TICKS(5));
 }

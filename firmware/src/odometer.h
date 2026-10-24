@@ -6,7 +6,8 @@
 // Odometer + trip meter (2026-10-21)
 // ============================================================================
 // The ZombieVerter has no distance parameter, so the dash keeps its own:
-// distance is integrated from Veh_Speed (myData.vehSpeedKph) while CAN is
+// distance is integrated from road speed (myData.vehSpeedKph - computed from
+// motor rpm by speed_cal.h, since the VCU's Veh_Speed is never set) while CAN is
 // live, falling back to GPS ground speed when it isn't (GPS readings under
 // GPS_MIN_KPH are treated as stationary drift, not motion). Started at 0 -
 // the Scout hadn't entered service yet when this was built (confirmed with

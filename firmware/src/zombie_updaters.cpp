@@ -7,6 +7,7 @@
 #include "sdo_client.h"
 #include "can_monitor.h"
 #include "can_capture.h"
+#include "speed_cal.h"
 #include <math.h>
 
 ESP32S3_TWAI can;
@@ -31,7 +32,7 @@ void ui_notify_screen_created(void) {
 static void checkAutoTheme();
 
 // --- SDO poll table --------------------------------------------------------
-// All 27 live telemetry params (see the big comment in zombie_updaters.h for
+// All 28 live telemetry params (see the big comment in zombie_updaters.h for
 // why this covers what used to be CAN-broadcast-only fields too).
 struct PollEntry { uint16_t paramId; };
 static const PollEntry pollTable[] = {
@@ -62,6 +63,7 @@ static const PollEntry pollTable[] = {
     {PARAM_ID_CABLELIM},
     {PARAM_ID_REGENBRAKE},
     {PARAM_ID_BATTCAP},
+    {PARAM_ID_GEARFB},
 };
 static const size_t pollTableSize = sizeof(pollTable) / sizeof(pollTable[0]);
 static size_t pollCursor = 0;
@@ -79,6 +81,15 @@ static void sendNextPollRequest() {
     }
     lastSlotWasClient = false;
     if (pollTableSize == 0) return;
+    // Motor rpm drives road speed (speed_cal.h) - once per full table pass
+    // (~1.4s) is far too slow for a speedometer needle, so it also takes
+    // every 4th main slot (~200ms), costing the rest of the table ~25%.
+    static uint8_t mainSlot = 0;
+    if (++mainSlot >= 4) {
+        mainSlot = 0;
+        sdoRequestRead(PARAM_ID_MOTOR_SPEED);
+        return;
+    }
     sdoRequestRead(pollTable[pollCursor].paramId);
     pollCursor = (pollCursor + 1) % pollTableSize;
 }
@@ -96,7 +107,7 @@ static bool aux12vEverReceived = false;
 static void applySdoValue(uint16_t paramId, int32_t rawValue) {
     float value = sdoToFloat(rawValue);
     switch (paramId) {
-        case PARAM_ID_VEH_SPEED:   myData.vehSpeedKph   = (int)value; break;
+        case PARAM_ID_VEH_SPEED:   myData.vcuVehSpeedKph = (int)value; break;   // not road speed - see speed_cal.h
         case PARAM_ID_OPMODE:      myData.opmode        = (int)value; break;
         case PARAM_ID_POWER:       myData.powerKw       = value;       break;
         case PARAM_ID_LASTERR:     myData.lastErr       = (int)value; break;
@@ -106,7 +117,12 @@ static void applySdoValue(uint16_t paramId, int32_t rawValue) {
         case PARAM_ID_TMPM:        myData.motorTemp     = (int)value; break;
         case PARAM_ID_TMPHS:       myData.heatsinkTemp  = (int)value; break;
         case PARAM_ID_U12V:        myData.aux12vVoltage = value; aux12vEverReceived = true; break;
-        case PARAM_ID_MOTOR_SPEED: myData.motorRpm      = (int)value; break;
+        case PARAM_ID_MOTOR_SPEED:
+            myData.motorRpm = (int)value;
+            myData.vehSpeedKph = (int)lroundf(speed_cal_kph(myData.motorRpm,
+                                     speed_cal_range_for(myData.gearFb, myData.dirState)));
+            break;
+        case PARAM_ID_GEARFB:      myData.gearFb        = (int)value; break;
         case PARAM_ID_GEAR:        myData.gear          = (int)value; break;
         case PARAM_ID_MOT_ACTIVE:  myData.motActive     = (int)value; break;
         case PARAM_ID_REGENMAX:    myData.regenMax      = value;       break;
@@ -167,7 +183,7 @@ void TaskCANReceiver(void *pvParameters) {
     updateUiFast.attach_ms(PERIOD_FAST_MS, fastUpdate);
     updateUiMid.attach_ms(PERIOD_MID_MS, midUpdate);
     updateUiSlow.attach_ms(PERIOD_SLOW_MS, slowUpdate);
-    sendPoll.attach_ms(PERIOD_SDO_POLL_MS, sendNextPollRequest); // 27-entry table -> ~1350ms full refresh
+    sendPoll.attach_ms(PERIOD_SDO_POLL_MS, sendNextPollRequest); // 28-entry table + motor rpm every 4th slot
     autoThemeTicker.attach_ms(PERIOD_AUTO_THEME_MS, checkAutoTheme);
 #ifdef CAN_TRACE
     traceDump.attach_ms(1000, canTraceDumpMyData);
@@ -571,16 +587,20 @@ void slowUpdate() {
     bool canDropout = ui_can_freshness_hasEverReceived() && !ui_can_freshness_isLive();
     bool overTemp = (curMotorTemp >= warningSet.motorTemp) || (curHeatsinkTemp >= warningSet.heatsinkTemp);
     // Range inputs for the home screen's RANGE card (odometer.h does the math).
-    int rangeSoc = 0;
+    int rangeSoc = 0, gearFbNow = 1, dirNow = 1;
     float rangeBatt = 0;
     if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
         rangeSoc = myData.soc;
         rangeBatt = myData.battCapKWh;
+        gearFbNow = myData.gearFb;
+        dirNow = myData.dirState;
         xSemaphoreGive(dataMutex);
     }
+    bool speedCalibrated = speed_cal_is_calibrated(speed_cal_range_for(gearFbNow, dirNow));
     if (xSemaphoreTake(uiMutex, portMAX_DELAY) == pdTRUE) {
         ui_fault_banner_update(canDropout, overTemp, curLastErr);
         ui_speedScreen_setRangeInputs(rangeSoc, rangeBatt);
+        ui_speedScreen_setSpeedCalibrated(speedCalibrated);
         // Home screen's odometer/trip (odometer.h integrates in loop();
         // this only redraws when the shown tenth changes) and its gauges'
         // warning arcs - every tick, not dirty-checked, both are cheap

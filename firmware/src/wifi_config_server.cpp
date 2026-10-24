@@ -9,6 +9,7 @@
 #include "ui_can_freshness.h"
 #include "wifi_pages.h"
 #include "build_info.h"
+#include "speed_cal.h"
 #include <Update.h>
 #include <SD.h>
 #include <vector>
@@ -143,6 +144,23 @@ static void handleRoot() {
     fieldF(html, "Work longitude", "", "worklon", "0.0000001", 7, workLon, "&deg;");
     html += "</div>";
 
+    html += "<div class='card'><h2>Drivetrain</h2>";
+    fieldF(html, "Axle ratio", "Changing this resets the GPS speed calibration", "axle", "0.01", 2,
+           speed_cal_axle_ratio(), ":1");
+    fieldF(html, "Tire diameter", "Changing this resets the GPS speed calibration", "tire", "0.1", 1,
+           speed_cal_tire_inches(), "in");
+    for (int r = 0; r < 2; r++) {
+        char line[120];
+        if (speed_cal_is_calibrated(r))
+            snprintf(line, sizeof(line), "<p class='hint'>%s range: calibrated, %.2f:1 reduction</p>",
+                     r == 0 ? "LOW" : "HIGH", speed_cal_implied_reduction(r));
+        else
+            snprintf(line, sizeof(line), "<p class='hint is-warn'>%s range: uncalibrated &mdash; "
+                     "Settings &rsaquo; Calibration &rsaquo; CALIBRATE FROM GPS on the dash</p>", r == 0 ? "LOW" : "HIGH");
+        html += line;
+    }
+    html += "</div>";
+
     html += "<div class='card'><h2>Odometer</h2>";
     fieldF(html, "Odometer", "Only changes if you edit it", "odo", "0.1", 1, odometer_total_miles(), "mi");
     html += "</div>";
@@ -194,6 +212,17 @@ static void handleSave() {
     applyDoubleArg("worklat", &workLat, -90.0, 90.0);
     applyDoubleArg("worklon", &workLon, -180.0, 180.0);
     updateVehicleConfig();
+
+    // Drivetrain (2026-10-24): only apply real edits - each change resets the
+    // GPS speed calibration, so re-saving the shown value mustn't.
+    if (server.hasArg("axle")) {
+        float v = server.arg("axle").toFloat();
+        if (fabsf(v - speed_cal_axle_ratio()) > 0.004f) speed_cal_set_axle_ratio(v);
+    }
+    if (server.hasArg("tire")) {
+        float v = server.arg("tire").toFloat();
+        if (fabsf(v - speed_cal_tire_inches()) > 0.04f) speed_cal_set_tire_inches(v);
+    }
 
     // Odometer (2026-10-21): the form always resubmits the shown value, so
     // only apply a real edit - re-saving the rounded display value would

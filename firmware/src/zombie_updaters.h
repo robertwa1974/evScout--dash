@@ -14,7 +14,7 @@
 #define PERIOD_FAST_MS      20
 #define PERIOD_MID_MS       200
 #define PERIOD_SLOW_MS      800
-#define PERIOD_SDO_POLL_MS  50   // 27-entry pollTable -> ~1350ms full refresh
+#define PERIOD_SDO_POLL_MS  50   // 28-entry pollTable; motor rpm also every 4th slot (~200ms) for the speedometer
 #define PERIOD_AUTO_THEME_MS 60000  // how often Auto mode re-checks GPS-based day/night (a sunrise/sunset crossing doesn't need finer granularity than this)
 
 // ============================================================================
@@ -41,7 +41,10 @@
 //   - tmpm read a real negative value (-27.7 degC, open-thermistor reading
 //     with no motor attached) confirming it must be treated as signed.
 // ============================================================================
-#define PARAM_ID_VEH_SPEED   2017  // kph - real vehicle speed, not motor rpm
+#define PARAM_ID_VEH_SPEED   2017  // kph - the VCU's own road speed. NEVER SET on Rob's VCU (Vehicle =
+                                    // Classic; only BMW vehicle classes write it) - kept for diagnostics as
+                                    // myData.vcuVehSpeedKph. Road speed is computed from motor rpm instead,
+                                    // see speed_cal.h (2026-10-24).
 #define PARAM_ID_OPMODE      2002  // 0=Off,1=Run,2=Precharge,3=PchFail,4=Charge
 #define PARAM_ID_POWER       2011  // kW
 #define PARAM_ID_LASTERR     2004  // fault code enum
@@ -76,6 +79,7 @@
 #define PARAM_ID_PLUGDET     2050  // 0=Off,1=On,2=na - charge plug/cable connected
 #define PARAM_ID_AC_VOLTS    2079  // V - AC supply voltage actually present at the charger
 #define PARAM_ID_PILOTLIM    2049  // A - control-pilot (CP) current limit: what the EVSE is currently offering
+#define PARAM_ID_GEARFB      2047  // 0=LOW,1=HIGH,2=AUTO,3=HIGHFWDLOWREV - engaged MG2 range (LS600h L110F 2-speed), picks speed_cal.h's K
 #define PARAM_ID_BATTCAP     38    // kWh - pack capacity setting (2026-10-24, for the range estimate in odometer.h)
 #define PARAM_ID_REGENBRAKE  122   // % - brake-pedal regen (2026-10-21, Drive screen's editable 6th card; same -35..0 range as regenmax, per the Dial firmware)
 #define PARAM_ID_CABLELIM    2048  // A - proximity-pilot (PP) current limit: the cable's rated capacity (the closest thing to a raw "PPVal" this VCU exposes - there's no raw PP resistance/voltage telemetry, only these two derived current limits)
@@ -104,7 +108,9 @@ typedef struct struct_message {
     float regenMax;
 
     // [SDO poll only - no broadcast equivalent]
-    int   vehSpeedKph;      // Veh_Speed - actual vehicle speed
+    int   vehSpeedKph;      // ROAD SPEED, computed from |motorRpm| by speed_cal.h (2026-10-24) - what every consumer uses
+    int   vcuVehSpeedKph;   // the VCU's own Veh_Speed (2017) - always 0 on Vehicle=Classic, diagnostics only
+    int   gearFb;           // GearFB - engaged MG2 range, see PARAM_ID_GEARFB
     int   opmode;
     float powerKw;
     int   lastErr;
