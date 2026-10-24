@@ -8,7 +8,14 @@
 #include <math.h>
 
 #define METERS_PER_MILE    1609.344
-#define ODO_SAVE_EVERY_MI  1.0
+// Save policy (2026-10-24, for ignition-switched power - key-off cuts power
+// instantly, with no warning): every 0.25 mi while moving, plus once the
+// vehicle has been stopped STOP_SAVE_MS after moving (key-off nearly
+// always follows a stop), if at least STOP_SAVE_MIN_M was travelled since
+// the last save. Was once per mile.
+#define ODO_SAVE_EVERY_MI  0.25
+#define STOP_SAVE_MS       3000UL
+#define STOP_SAVE_MIN_M    10.0
 #define GPS_MIN_KPH        3.0f    // below this, GPS speed is position jitter, not motion
 #define GPS_MAX_AGE_MS     3000
 #define INTEGRATE_EVERY_MS 200
@@ -25,6 +32,7 @@
 #define STOP_GRACE_MS      60000UL                    // idle draw still counted this long after stopping
 
 static uint32_t lastMovingMs = 0;
+static bool movedSinceSave = false;   // moving -> stopped transition pending a save
 
 static Preferences preferences;  // own instance, own namespace - same reasoning as vehicle_config.cpp
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -110,9 +118,16 @@ void odometer_poll(void) {
         float kw;
         bool measured;
         double secs = dt / 1000.0;
-        double stepM = currentKph(&kw, &measured) / 3.6 * secs;
-        // Energy counts whenever measurable, moving or not - idle draw at a
-        // light is real consumption. Regen arrives as negative power.
+        float kph = currentKph(&kw, &measured);
+        // Any movement - CAN or GPS fallback - restarts the stop timer.
+        if (kph > 0) {
+            movedSinceSave = true;
+            lastMovingMs = now;
+        }
+        double stepM = kph / 3.6 * secs;
+        // Energy counts whenever measurable (see currentKph(): CAN live, not
+        // charging, moving or within STOP_GRACE_MS of moving - idle draw at a
+        // light is real consumption). Regen arrives as negative power.
         double stepWh = measured ? kw * 1000.0 * secs / 3600.0 : 0;
         portENTER_CRITICAL(&lock);
         totalM += stepM;
@@ -131,7 +146,11 @@ void odometer_poll(void) {
         }
         portEXIT_CRITICAL(&lock);
     }
-    if (saveRequested || totalM - lastSavedTotalM >= ODO_SAVE_EVERY_MI * METERS_PER_MILE) {
+    // Stopped long enough after moving -> save now, before a key-off can lose it.
+    bool stopSave = movedSinceSave && lastMovingMs != 0 && now - lastMovingMs >= STOP_SAVE_MS &&
+                    totalM - lastSavedTotalM >= STOP_SAVE_MIN_M;
+    if (stopSave) movedSinceSave = false;
+    if (saveRequested || stopSave || totalM - lastSavedTotalM >= ODO_SAVE_EVERY_MI * METERS_PER_MILE) {
         saveRequested = false;
         save();
     }

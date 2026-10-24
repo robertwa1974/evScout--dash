@@ -16,11 +16,13 @@
 // every 1.25s (zombie_updaters.h's poll table), so expect roughly 1-2%
 // under-reading, not odometer-grade precision.
 //
-// Persistence (NVS, namespace "odo"): saved every ODO_SAVE_EVERY_MI of
-// travel, on trip reset, on a config-page edit, and when the low-12V
-// shutdown sequence starts (ui_shutdown.cpp calls odometer_request_save()).
-// A sudden power loss without that warning loses at most one save interval.
-// Once a mile keeps NVS wear negligible over the vehicle's life.
+// Persistence (NVS, namespace "odo"): saved every 0.25 mi of travel, 3 s
+// after the vehicle stops (2026-10-24 - so an instant key-off on
+// ignition-switched power loses nothing), on trip reset, on a config-page
+// edit, when the low-12V shutdown sequence starts (ui_shutdown.cpp calls
+// odometer_request_save()), and before a WiFi firmware update reboots.
+// A power cut while moving loses at most 0.25 mi. NVS wear stays far below
+// flash endurance over the vehicle's life.
 //
 // All NVS writes happen in odometer_poll(), called from firmware.ino's
 // loop() - request_save() only sets a flag, so it's safe from Ticker/LVGL
