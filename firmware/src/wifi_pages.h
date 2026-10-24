@@ -74,6 +74,38 @@ static const char STYLE_CSS[] =
     "input[type=number]{width:100%}.tile .v{font-size:26px}.tile.wide{grid-column:span 1}"
     "nav{margin-left:0;width:100%}nav a{flex:1;text-align:center}}";
 
+// /update body (2026-10-24): pick firmware.bin, upload with a progress bar
+// (XHR, so upload progress is visible), then wait for the reboot and show
+// the new version from /api/version.
+static const char UPDATE_BODY[] =
+    "<div class='card'><h2>Install firmware over WiFi</h2>"
+    "<p class='hint'>Use <b>firmware.bin</b> from a release - not the merged image. "
+    "Settings, odometer and logs are kept. The dash reboots when it's done.</p>"
+    "<div class='field'><label for='fw'>Firmware file</label>"
+    "<div class='inp'><input type='file' id='fw' accept='.bin'></div></div>"
+    "<div class='bar' style='height:12px;margin:8px 0 14px'><i id='pb'></i></div>"
+    "<p id='msg' class='hint'></p>"
+    "<button id='go' class='btn primary' type='button'>Install</button></div>"
+    "<script>"
+    "const $=i=>document.getElementById(i);"
+    "function say(t,w){const m=$('msg');m.textContent=t;m.className=w?'hint is-warn':'hint';}"
+    "function waitBack(){fetch('/api/version',{cache:'no-store'}).then(r=>r.json()).then(v=>{"
+    "say('Done - now running '+v.version+'.');$('go').disabled=false;"
+    "}).catch(()=>setTimeout(waitBack,2000));}"
+    "$('go').onclick=()=>{const f=$('fw').files[0];"
+    "if(!f){say('Choose a firmware.bin file first.',1);return;}"
+    "if(/merged/i.test(f.name)){say('That is the merged image - use firmware.bin for WiFi updates.',1);return;}"
+    "const fd=new FormData();fd.append('firmware',f,f.name);"
+    "const x=new XMLHttpRequest();x.open('POST','/update');"
+    "x.upload.onprogress=e=>{if(e.lengthComputable){const p=Math.round(e.loaded*100/e.total);"
+    "$('pb').style.width=p+'%';say('Uploading '+p+'%');}};"
+    "x.onload=()=>{if(x.status==200){$('pb').style.width='100%';"
+    "say('Installed - rebooting. Reconnect to Scout80-Config if your phone drops off.');"
+    "setTimeout(waitBack,8000);}else{say(x.responseText||'Update failed',1);$('go').disabled=false;}};"
+    "x.onerror=()=>{say('Upload failed - is the phone still on Scout80-Config?',1);$('go').disabled=false;};"
+    "$('go').disabled=true;say('Uploading 0%');x.send(fd);};"
+    "</script>";
+
 // /live body - filled in by the script from /api/live once a second. Each
 // value element's FIRST child is a text node the script overwrites, so the
 // unit <small> after it stays put.

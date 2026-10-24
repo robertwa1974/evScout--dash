@@ -8,6 +8,8 @@
 #include "gps_driver.h"
 #include "ui_can_freshness.h"
 #include "wifi_pages.h"
+#include "build_info.h"
+#include <Update.h>
 #include <SD.h>
 #include <vector>
 #include <math.h>
@@ -51,7 +53,7 @@ static void pageStart(String &html, const char *title, const char *active) {
     // Bump ?v= whenever STYLE_CSS changes, so phones drop their cached copy.
     html += " - Scout 80</title><link rel='stylesheet' href='/style.css?v=1'></head><body>"
             "<header><div class='brand'>SCOUT <b>80</b></div><nav>";
-    static const char *const LINKS[][2] = {{"/", "Config"}, {"/live", "Live"}, {"/logs", "Logs"}};
+    static const char *const LINKS[][2] = {{"/", "Config"}, {"/live", "Live"}, {"/logs", "Logs"}, {"/update", "Update"}};
     for (const auto &l : LINKS) {
         html += "<a href='";
         html += l[0];
@@ -476,6 +478,104 @@ static void handleLogDelete() {
     server.send(303);
 }
 
+// --- WiFi firmware update (2026-10-24) -----------------------------------------
+// Writes an uploaded firmware.bin into the inactive OTA slot (app0/app1 in
+// app3M_fat9M_16MB - no partition change was needed), lets ESP-IDF verify it
+// (image header + SHA-256) in Update.end(), then reboots into it. NVS
+// (settings, odometer) and the SD card are untouched.
+//
+// Guards:
+//   - drive lock, same as every other write on these pages;
+//   - the first chunk must carry the ESP-IDF app description magic at
+//     offset 32 (0xABCD5432). A merged release image starts with the
+//     BOOTLOADER, which is also a valid-looking ESP image - written to an
+//     app slot it would pass the basic checks and leave the board needing
+//     USB recovery. Plain non-firmware files fail this check too.
+// If a new build is valid but crashes, recovery is a USB flash as before
+// (this Arduino core is built without bootloader rollback).
+
+#define APP_DESC_MAGIC 0xABCD5432UL
+#define APP_DESC_OFFSET 32        // 24-byte image header + 8-byte first segment header
+
+static String otaError;
+static bool otaOk = false;
+static uint32_t restartAtMs = 0;
+
+static void handleUpdatePage() {
+    String html;
+    pageStart(html, "Update", "/update");
+    html += "<h1>Firmware update</h1>";
+    char buf[160];
+    snprintf(buf, sizeof(buf), "<p class='hint'>Running <b>%s</b>. Free update slot: %u KB.</p>",
+             DASH_TAG, (unsigned)(ESP.getFreeSketchSpace() / 1024));
+    html += buf;
+    if (vehicleIsMoving()) {
+        html += "<div class='banner warn'>Vehicle is moving &mdash; updates are locked until it stops.</div>";
+        sendPage(html);
+        return;
+    }
+    html += UPDATE_BODY;
+    sendPage(html);
+}
+
+static void handleUpdateUpload() {
+    HTTPUpload &up = server.upload();
+    if (up.status == UPLOAD_FILE_START) {
+        otaOk = false;
+        otaError = "";
+        if (vehicleIsMoving()) { otaError = "Vehicle is moving - update refused"; return; }
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) otaError = Update.errorString();
+    } else if (up.status == UPLOAD_FILE_WRITE) {
+        if (otaError.length()) return;
+        if (up.totalSize == 0) {   // first chunk of the file
+            uint32_t magic = 0;
+            if (up.currentSize >= APP_DESC_OFFSET + 4) memcpy(&magic, up.buf + APP_DESC_OFFSET, 4);
+            if (magic != APP_DESC_MAGIC) {
+                otaError = "Not an app firmware file - use firmware.bin, not the merged image";
+                Update.abort();
+                return;
+            }
+        }
+        if (Update.write(up.buf, up.currentSize) != up.currentSize) {
+            otaError = Update.errorString();
+            Update.abort();
+        }
+    } else if (up.status == UPLOAD_FILE_END) {
+        if (otaError.length()) return;
+        if (Update.end(true)) otaOk = true;   // true = size taken from what was written
+        else otaError = Update.errorString();
+    } else if (up.status == UPLOAD_FILE_ABORTED) {
+        Update.abort();
+        otaError = "Upload interrupted";
+    }
+}
+
+static void handleUpdateDone() {
+    server.sendHeader("Cache-Control", "no-store");
+    if (otaOk) {
+        server.send(200, "text/plain", "OK");
+        restartAtMs = millis() + 1500;   // let the response reach the phone first
+    } else {
+        server.send(500, "text/plain", otaError.length() ? otaError : String("Update failed"));
+    }
+}
+
+static void handleApiVersion() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", String("{\"version\":\"") + DASH_TAG + "\"}");
+}
+
+// Called from poll() once an update is installed: close out SD files and
+// the odometer cleanly, then reboot into the new slot.
+static void rebootIntoUpdate(void) {
+    odometer_request_save();
+    odometer_poll();
+    data_logger_flush();
+    can_capture_flush();
+    delay(100);
+    ESP.restart();
+}
+
 // Why the last start attempt failed ("" if it didn't) - shown on the
 // Settings WiFi row. Added 2026-10-21 after the bench found the AP
 // invisible while the screen claimed it was on: start() used to ignore
@@ -550,6 +650,9 @@ void wifi_config_server_start(void) {
         server.on("/logs/get", HTTP_GET, handleLogGet);
         server.on("/logs/delete", HTTP_POST, handleLogDelete);
         server.on("/logs/delete-all", HTTP_POST, handleLogDeleteAll);
+        server.on("/update", HTTP_GET, handleUpdatePage);
+        server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
+        server.on("/api/version", HTTP_GET, handleApiVersion);
         routesAdded = true;
     }
     server.begin();
@@ -589,4 +692,5 @@ void wifi_config_server_init(void) {
 
 void wifi_config_server_poll(void) {
     if (running) server.handleClient();
+    if (restartAtMs && (int32_t)(millis() - restartAtMs) >= 0) rebootIntoUpdate();
 }
