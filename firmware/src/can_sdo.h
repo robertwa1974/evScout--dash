@@ -41,7 +41,8 @@
 // index 0x5002 runs the command named by the subindex. Only SAVE is used
 // here (persist the VCU's current params to its own flash) - the same
 // thing the openinverter web UI's "Save parameters to flash" button sends.
-// Not yet verified against Rob's ZombieVerter on the bench (2026-10-21).
+// Verified on Rob's ZombieVerter 2026-10-23: a saved param survives a VCU
+// restart.
 #define SDO_INDEX_COMMANDS  0x5002
 #define SDO_SUBCMD_SAVE     0
 

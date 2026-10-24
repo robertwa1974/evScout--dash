@@ -18,9 +18,11 @@
 
 // "Title" [-] [spinbox] [+] row. Children: [0]=label, [1]=minus,
 // [2]=spinbox, [3]=plus - callers wire the +/- buttons themselves.
+// intDigits = digits BEFORE the decimal point (LVGL's separator_position),
+// 0 = no decimal point. NOT the number of decimals: 280.0 is (4, 3).
 lv_obj_t *ui_settings_create_stepper_row(lv_obj_t *section, const char *title,
                                          int32_t rangeMin, int32_t rangeMax, int32_t initialValue,
-                                         uint8_t digitCount, uint8_t decimalPos);
+                                         uint8_t digitCount, uint8_t intDigits);
 
 // Explicit day/night colors for lv_menu's stock row/section containers -
 // see ui_settingsScreen.cpp for why lv_menu needs this.

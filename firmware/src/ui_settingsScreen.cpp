@@ -192,7 +192,7 @@ static void screenLoadCb(lv_event_t *e) {
 // --- Warning-threshold row: "Title" [-] [ NNN unit ] [+] --------------------
 lv_obj_t *ui_settings_create_stepper_row(lv_obj_t *section, const char *title,
                                      int32_t rangeMin, int32_t rangeMax, int32_t initialValue,
-                                     uint8_t digitCount, uint8_t decimalPos) {
+                                     uint8_t digitCount, uint8_t intDigits) {
     lv_obj_t *cont = lv_menu_cont_create(section);
     lv_obj_set_height(cont, ROW_HEIGHT);
 
@@ -219,7 +219,7 @@ lv_obj_t *ui_settings_create_stepper_row(lv_obj_t *section, const char *title,
     // settings field.
     lv_obj_set_size(spinbox, 130, STEPPER_BTN);
     lv_spinbox_set_range(spinbox, rangeMin, rangeMax);
-    lv_spinbox_set_digit_format(spinbox, digitCount, decimalPos);
+    lv_spinbox_set_digit_format(spinbox, digitCount, intDigits);
     lv_spinbox_set_rollover(spinbox, false);
     lv_spinbox_set_value(spinbox, initialValue);
     lv_obj_clear_flag(spinbox, LV_OBJ_FLAG_CLICKABLE);  // display-only: +/- buttons drive it, never a keypad popup
@@ -482,7 +482,7 @@ void ui_settingsScreen_screen_init(void)
     socSpinbox = ui_settings_create_stepper_row(thSection, "Low SOC (%)", 0, 100, warningSet.lowSoc, 3, 0);
     motorTSpinbox = ui_settings_create_stepper_row(thSection, "High Motor Temp (\xC2\xB0" "C)", -40, 200, warningSet.motorTemp, 3, 0);
     heatsinkTSpinbox = ui_settings_create_stepper_row(thSection, "High Heatsink Temp (\xC2\xB0" "C)", 0, 150, warningSet.heatsinkTemp, 3, 0);
-    packVSpinbox = ui_settings_create_stepper_row(thSection, "Low Pack Voltage (V)", 2000, 4500, (int32_t)(warningSet.packVLow * 10), 4, 1);
+    packVSpinbox = ui_settings_create_stepper_row(thSection, "Low Pack Voltage (V)", 2000, 4500, (int32_t)(warningSet.packVLow * 10), 4, 3);  // "280.0": 3 digits before the point (was 1 -> showed "2.800", fixed 2026-10-23)
     wireThresholdRow(socSpinbox);
     wireThresholdRow(motorTSpinbox);
     wireThresholdRow(heatsinkTSpinbox);
