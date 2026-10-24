@@ -14,8 +14,11 @@
 //
 // On/off and rate are toggled from Settings > Data Logging and persist
 // immediately, same "apply + persist, no Save step" convention as the WiFi
-// switch. Left on, logging resumes into a NEW file on the next boot - so
-// once enabled, every drive is captured without touching the screen.
+// switch. Enabled means ARMED (2026-10-24): no file is created until CAN is
+// live and the VCU leaves Off (opmode != 0), so bench boots with the VCU off
+// leave nothing behind. Once a file starts it records until power-off or the
+// switch goes off, even if the VCU returns to Off. Left on, every drive gets
+// its own new file without touching the screen.
 //
 // All SD I/O happens in data_logger_poll(), called from firmware.ino's
 // loop() - never from a Ticker callback (same watchdog lesson as the NAV
@@ -39,12 +42,12 @@ extern "C" {
 // on. Call once in setup(), after sd_init().
 void data_logger_init(void);
 
-// Start a new file / stop and close it. Both persist the on/off state.
-// start returns false (and stays off) if there's no SD card or the file
-// can't be created - see data_logger_status_text().
+// Enable (arm) / disable. Both persist the on/off state. start returns false
+// (and stays off) if there's no SD card - see data_logger_status_text().
 bool data_logger_start(void);
 void data_logger_stop(void);
-bool data_logger_is_running(void);
+bool data_logger_is_enabled(void);   // switched on (may still be waiting for the VCU)
+bool data_logger_is_running(void);   // a file is open and recording
 
 // 1, 2 or 5 Hz - anything else is clamped to the nearest. Persists.
 void data_logger_set_rate_hz(uint8_t hz);

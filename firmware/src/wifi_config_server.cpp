@@ -9,6 +9,7 @@
 #include "ui_can_freshness.h"
 #include "wifi_pages.h"
 #include <SD.h>
+#include <vector>
 #include <math.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
@@ -251,7 +252,7 @@ static void handleApiLive() {
         opmode, d.lastErr, gpsData.hasFix ? "true" : "false", (unsigned)gpsData.satellites,
         gpsData.hasFix ? gpsData.latitude : 0.0, gpsData.hasFix ? gpsData.longitude : 0.0,
         odometer_total_miles(), odometer_trip_miles(),
-        data_logger_is_running() ? data_logger_current_file() : "off",
+        data_logger_is_running() ? data_logger_current_file() : (data_logger_is_enabled() ? "waiting" : "off"),
         rangeMi, tripWhmi, recentWhmi);
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "application/json", json);
@@ -325,6 +326,18 @@ static int listLogDir(const char *dirPath, String &html) {
     return count;
 }
 
+// "Delete all" form under a card's table (2026-10-24) - confirm() first, since
+// it removes every finished file in that folder at once.
+static void deleteAllButton(String &html, const char *dir, const char *what) {
+    html += "<form method='POST' action='/logs/delete-all' style='margin-top:12px' "
+            "onsubmit=\"return confirm('Delete ALL ";
+    html += what;
+    html += "? Files still recording are kept.')\">"
+            "<input type='hidden' name='dir' value='";
+    html += dir;
+    html += "'><button class='btn sm danger' type='submit'>Delete all</button></form>";
+}
+
 static void handleLogs() {
     String html;
     pageStart(html, "Logs", "/logs");
@@ -346,10 +359,16 @@ static void handleLogs() {
         xSemaphoreGive(sdMutex);
     }
     html += "<div class='card'><h2>Telemetry logs (CSV)</h2>";
-    if (logCount) html += "<table>" + logRows + "</table>";
+    if (logCount) {
+        html += "<table>" + logRows + "</table>";
+        deleteAllButton(html, "logs", "telemetry logs");
+    }
     else html += "<p class='empty'>None yet &mdash; turn on Settings &rsaquo; Data Logging on the dash.</p>";
     html += "</div><div class='card'><h2>CAN captures (SavvyCAN CSV)</h2>";
-    if (canCount) html += "<table>" + canRows + "</table>";
+    if (canCount) {
+        html += "<table>" + canRows + "</table>";
+        deleteAllButton(html, "can", "CAN captures");
+    }
     else html += "<p class='empty'>None yet &mdash; Settings &rsaquo; CAN Monitor &rsaquo; START CAPTURE on the dash.</p>";
     html += "</div><p class='hint'>Open captures in SavvyCAN with File &rsaquo; Load Log File "
             "(GVRET / native CSV).</p>";
@@ -397,6 +416,47 @@ static void handleLogGet() {
         f.close();
         xSemaphoreGive(sdMutex);
     }
+}
+
+// Deletes every finished log in one folder (dir=logs or dir=can). Names are
+// collected first, then removed - deleting while iterating a FAT directory
+// can skip entries. Same guards as single delete: drive lock, name check,
+// never the file currently recording.
+static void handleLogDeleteAll() {
+    if (vehicleIsMoving()) {
+        server.send(403, "text/plain", "Vehicle is moving - delete locked");
+        return;
+    }
+    String which = server.arg("dir");
+    const char *dirPath = (which == "can") ? CAN_CAPTURE_DIR : (which == "logs") ? DATA_LOGGER_DIR : NULL;
+    if (dirPath && sd_available()) {
+        std::vector<String> names;
+        if (xSemaphoreTake(sdMutex, portMAX_DELAY) == pdTRUE) {
+            File dir = SD.open(dirPath);
+            if (dir && dir.isDirectory()) {
+                File f = dir.openNextFile();
+                while (f) {
+                    String name = f.name();
+                    int slash = name.lastIndexOf('/');
+                    if (slash >= 0) name = name.substring(slash + 1);
+                    if (!f.isDirectory() && isLogName(name) && !isActiveLog(name)) names.push_back(name);
+                    f.close();
+                    f = dir.openNextFile();
+                }
+            }
+            if (dir) dir.close();
+            xSemaphoreGive(sdMutex);
+        }
+        for (const String &name : names) {
+            String path = logPath(name);
+            if (xSemaphoreTake(sdMutex, portMAX_DELAY) == pdTRUE) {
+                SD.remove(path);
+                xSemaphoreGive(sdMutex);
+            }
+        }
+    }
+    server.sendHeader("Location", "/logs");
+    server.send(303);
 }
 
 static void handleLogDelete() {
@@ -489,6 +549,7 @@ void wifi_config_server_start(void) {
         server.on("/logs", HTTP_GET, handleLogs);
         server.on("/logs/get", HTTP_GET, handleLogGet);
         server.on("/logs/delete", HTTP_POST, handleLogDelete);
+        server.on("/logs/delete-all", HTTP_POST, handleLogDeleteAll);
         routesAdded = true;
     }
     server.begin();

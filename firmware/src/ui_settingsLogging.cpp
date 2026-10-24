@@ -25,7 +25,7 @@ static const uint8_t RATES[3] = {1, 2, 5};
 static void updateStatus(void) {
     const char *s = data_logger_status_text();
     if (strcmp(lv_label_get_text(statusLabel), s) != 0) lv_label_set_text(statusLabel, s);
-    bool on = data_logger_is_running();
+    bool on = data_logger_is_enabled();
     if (on != lv_obj_has_state(logSwitch, LV_STATE_CHECKED)) {
         if (on) lv_obj_add_state(logSwitch, LV_STATE_CHECKED);
         else lv_obj_clear_state(logSwitch, LV_STATE_CHECKED);
@@ -122,7 +122,8 @@ lv_obj_t *ui_settingsLogging_create_page(lv_obj_t *menu) {
     lv_obj_set_style_text_font(hintLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(hintLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_label_set_text(hintLabel,
-        "New file each time logging starts, and each boot while left on. "
+        "Left on, each drive gets its own file - it starts once the VCU leaves Off, so "
+        "bench boots with the VCU off leave nothing. "
         "To download: Display > WiFi Config on, join " WIFI_CONFIG_SSID ", open 192.168.4.1/logs");
 
     updateStatus();

@@ -20,7 +20,11 @@ static const char *CSV_HEADER =
 
 static Preferences preferences;  // own instance, own namespace - same reasoning as vehicle_config.cpp
 
+// enabled = the user switched logging on (persisted); running = a file is
+// open. Enabled-but-not-running means waiting for the VCU (2026-10-24).
+static bool enabled = false;
 static bool running = false;
+static uint32_t lastOpenAttemptMs = 0;
 static uint8_t rateHz = 1;
 static File logFile;
 static char fileName[16] = "";        // "LOG0007.csv"
@@ -61,6 +65,7 @@ static void writeBuffer(void) {
             xSemaphoreGive(sdMutex);
         }
         running = false;
+        enabled = false;   // not persisted - but stops poll() reopening a new file every loop
         fileName[0] = '\0';
         setStatus("SD write failed - stopped");
         // Deliberately NOT persisting "off" here: a full/removed card is a
@@ -107,13 +112,19 @@ static void appendRow(void) {
     }
 }
 
-bool data_logger_start(void) {
-    if (running) return true;
-    if (!sd_available()) {
-        setStatus("No SD card");
-        return false;
+// "Something worth logging": live CAN and the VCU out of Off (Run,
+// Precharge, PchFail or Charge). Bench boots with the VCU off never get here.
+static bool vcuActive(void) {
+    if (!ui_can_freshness_isLive()) return false;
+    int opmode = 0;
+    if (xSemaphoreTake(dataMutex, portMAX_DELAY) == pdTRUE) {
+        opmode = myData.opmode;
+        xSemaphoreGive(dataMutex);
     }
+    return opmode != 0;
+}
 
+static bool openLogFile(void) {
     preferences.begin("logger", false);
     uint32_t seq = preferences.getUInt("seq", 0) + 1;
     preferences.putUInt("seq", seq);
@@ -144,12 +155,24 @@ bool data_logger_start(void) {
     lastRowMs = 0;
     lastFlushMs = millis();
     running = true;
+    return true;
+}
+
+bool data_logger_start(void) {
+    if (!sd_available()) {
+        setStatus("No SD card");
+        return false;
+    }
+    enabled = true;
+    lastOpenAttemptMs = 0;
     persistEnabled(true);
+    if (!running) setStatus("Waiting for VCU (starts when it leaves Off)");
     return true;
 }
 
 void data_logger_stop(void) {
     persistEnabled(false);
+    enabled = false;
     if (!running) {
         setStatus("Off");
         return;
@@ -166,6 +189,10 @@ void data_logger_stop(void) {
 
 bool data_logger_is_running(void) {
     return running;
+}
+
+bool data_logger_is_enabled(void) {
+    return enabled;
 }
 
 void data_logger_set_rate_hz(uint8_t hz) {
@@ -203,9 +230,16 @@ void data_logger_init(void) {
     if (wasEnabled) data_logger_start();
 }
 
+#define OPEN_RETRY_MS 10000   // a failed open (card error) retries this often, not every loop
+
 void data_logger_poll(void) {
-    if (!running) return;
     uint32_t now = millis();
+    if (!running) {
+        if (!enabled || !vcuActive()) return;
+        if (lastOpenAttemptMs != 0 && now - lastOpenAttemptMs < OPEN_RETRY_MS) return;
+        lastOpenAttemptMs = now;
+        if (!openLogFile()) return;
+    }
     if (lastRowMs == 0 || now - lastRowMs >= 1000u / rateHz) {
         lastRowMs = now;
         appendRow();
