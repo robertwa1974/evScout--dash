@@ -30,7 +30,9 @@
 //             other devices stand out. Capture keeps running after leaving
 //             this page; the status line shows it whenever the page is open.
 //
-// Capture only runs while this page is on screen. One lv_table, rows
+// The ID table/bus monitoring only runs while this page is on screen
+// (can_monitor_set_active()); a raw capture, once started, does not stop
+// with it - see Stage 4. One lv_table, rows
 // rewritten in place - same widget-count reasoning as the Diagnostics
 // page; total rows capped at CAN_MONITOR_MAX_IDS. Row count only changes
 // through setRowCount() - see its comment for the LVGL bug it avoids.

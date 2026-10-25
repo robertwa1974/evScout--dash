@@ -166,15 +166,16 @@ void TaskCANReceiver(void *pvParameters) {
 #endif
 
     while (!ret) {
-        ret = can.init(); // TODO: verify 500kbit default in twai_lib.h matches your VCU's bus
+        ret = can.init(); // 500 kbit (twai_lib.h CAN_BAUDRATE) - confirmed against the real VCU, see firmware/can-bench.md
 #ifdef DEBUG
         Serial.printf("can.init : %s\n", ret ? "OK" : "FAIL");
 #endif
     }
 
-    // TODO: twai_lib's default filter is tuned for rusEFI's extended IDs.
-    // Left accept-everything for now (useFilter defaults false in twai_lib's
-    // init signature) - revisit once bus load is a known quantity.
+    // twai_lib's default filter is tuned for rusEFI's extended IDs, so it's
+    // left accept-everything (useFilter defaults false in twai_lib's init
+    // signature). Keep it that way: the CAN Monitor and raw capture
+    // (Settings) depend on seeing every ID on the bus.
     ret = can.alertConfigure(TWAI_ALERT_RX_DATA | TWAI_ALERT_BUS_ERROR | TWAI_ALERT_BUS_OFF);
 #ifdef DEBUG
     Serial.printf("can.alertConfigure : %s\n", ret ? "OK" : "FAIL");
@@ -483,7 +484,7 @@ void slowUpdate() {
             tMaxChanged = true; cellTMax = myData.cellTMax; old_myData.cellTMax = myData.cellTMax;
         }
         if (myData.opmode != old_myData.opmode || forcePush) {
-            // TODO: opmode itself was also once considered as a fault-
+            // Note: opmode itself was also once considered as a fault-
             // banner input, separate from the lastErr/overtemp/CAN-dropout
             // set ui_fault_banner.h actually wires (Phase 7, 2026-09-18) -
             // opmode is a normal operating-mode enum (Off/Run/Precharge/
@@ -516,9 +517,8 @@ void slowUpdate() {
         cableLim = myData.cableLimA;
         // Charge Status pill needs opmode/chgType/plugDet together (same
         // "snapshot together, not just the one that changed" reasoning as
-        // cellVMax/cellVMin above) - opmode is already read above for the
-        // TODO fault-banner check, snapshot it here too rather than
-        // duplicating that comparison.
+        // cellVMax/cellVMin above) - opmode's change check is already done
+        // above, so this reuses it rather than duplicating that comparison.
         if (myData.chgType != old_myData.chgType || forcePush) {
             chgStatusChanged = true; old_myData.chgType = myData.chgType;
         }

@@ -12,7 +12,7 @@ PlatformIO. Full architecture and build-issue history: see
 `scout80-dash-architecture.md` and `waveshare-dash-build.md` in the repo
 root — read both before touching CAN/SDO code or the build config.
 
-Thirteen screens: Splash/Clock (logo + UTC digital clock), Settings, Speed
+Twelve screens: Splash/Clock (logo + UTC digital clock), Settings, Speed
 (home), Drive, Status, Battery, Charging, GPS (telemetry-only, see below),
 GPS NAV (breadcrumb trail, see below), Destinations (Home/Work/nearest
 charging station picker, see below), 0-60/virtual dyno (LIVE + RESULTS).

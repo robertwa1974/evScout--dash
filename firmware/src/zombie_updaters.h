@@ -200,11 +200,11 @@ void setDefaultWarnSet();
 // Three-state PREFERENCE (what the user picked) vs the two-state PALETTE
 // that's actually rendered (ui_theme_mode_t, UI_THEME_DAY/UI_THEME_NIGHT):
 // DISPLAY_PREF_AUTO has to resolve to one of the two real palettes somehow.
-// There is currently no RTC and no light sensor on this board (see
-// scout80-dash-architecture.md's hardware list) - resolveDisplayPref() is
-// the one place that decision gets made, and today it's a hardcoded "Auto
-// behaves as Day" TODO stub pending real hardware. Wire a light sensor or a
-// time source in there when one exists; nothing else needs to change.
+// There is no RTC and no light sensor on this board, so resolveDisplayPref()
+// (zombie_updaters.cpp, the one place that decision gets made) computes
+// sunrise/sunset from the GPS fix's position and UTC date/time, falling
+// back to Day until a fix has been seen. A light sensor, if one is ever
+// added, would go in there too; nothing else needs to change.
 typedef enum {
     DISPLAY_PREF_AUTO,
     DISPLAY_PREF_DAY,
