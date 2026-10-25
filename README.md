@@ -76,10 +76,20 @@ Other environments:
 - `[env:mock-gps]` — replays a canned GPS route for bench work on the
   GPS/NAV screens. Note that it also feeds the odometer.
 
+**1-click web installer:** <https://robertwa1974.github.io/evScout--dash/>
+(Chrome/Edge over USB, UART DIP switch on **USB**). It writes the
+bootloader, partition table, `boot_app0` and app as separate parts, so NVS
+(settings, speed calibration, odometer) survives unless you tick "Erase
+device". Published by `.github/workflows/web-flasher.yml` on every `v*`
+tag, which also creates the GitHub Release. Set `DASH_TAG` in
+`firmware/src/build_info.h` to the tag first; the workflow fails if they
+differ.
+
 **Updating over WiFi** (v2.1+, once that firmware has been flashed over USB
 once): join the dash's `Scout80-Config` hotspot, open
 `http://192.168.4.1/update`, choose a release's `firmware.bin` (not the
-merged image - it's rejected), Install. Settings and the odometer are kept.
+`-full.bin` merged image - it's rejected), Install. Settings and the
+odometer are kept.
 
 Flashing over USB needs the board's UART DIP switch on **USB** (not GPS). CI
 (`.github/workflows/binary.yaml`) builds the shipping firmware on every

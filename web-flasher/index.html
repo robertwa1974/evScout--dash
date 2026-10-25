@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scout 80 Dash — Web Installer</title>
+  <!--
+    Installs firmware.bin as separate parts (bootloader 0x0, partitions
+    0x8000, boot_app0 0xe000, app 0x10000) rather than one merged
+    factory.bin: a merged image fills the gap at 0x9000 and would wipe NVS
+    (settings, speed calibration, odometer) on every install. boot_app0
+    resets otadata so the board boots this app0 even if a WiFi update had
+    last switched it to app1. See .github/workflows/web-flasher.yml.
+  -->
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+  ></script>
+  <style>
+    :root {
+      --green:  #22c55e;
+      --yellow: #eab308;
+      --bg:     #0f172a;
+      --card:   #1e293b;
+      --border: #334155;
+      --text:   #f1f5f9;
+      --muted:  #94a3b8;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    header h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: var(--green);
+      margin-bottom: 0.4rem;
+    }
+
+    header p {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 560px;
+      margin-bottom: 1.25rem;
+    }
+
+    .card h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .step-number {
+      background: var(--green);
+      color: #000;
+      font-weight: 700;
+      font-size: 0.8rem;
+      border-radius: 50%;
+      width: 1.5rem;
+      height: 1.5rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    ol, ul {
+      padding-left: 1.2rem;
+    }
+
+    li {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.7;
+    }
+
+    li strong, p strong {
+      color: var(--text);
+    }
+
+    p {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.6;
+    }
+
+    code {
+      color: var(--text);
+    }
+
+    .note {
+      background: #1c2a1c;
+      border-left: 3px solid var(--green);
+      border-radius: 4px;
+      padding: 0.75rem 1rem;
+      font-size: 0.85rem;
+      color: #86efac;
+      margin-top: 0.75rem;
+    }
+
+    .warning {
+      background: #2a1e0a;
+      border-left: 3px solid var(--yellow);
+      border-radius: 4px;
+      padding: 0.75rem 1rem;
+      font-size: 0.85rem;
+      color: #fde68a;
+      margin-top: 0.75rem;
+    }
+
+    .note strong, .warning strong {
+      color: inherit;
+    }
+
+    .install-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.5rem 0;
+    }
+
+    esp-web-install-button {
+      --esp-tools-button-color: var(--green);
+      --esp-tools-button-text-color: #000;
+    }
+
+    esp-web-install-button[install-unsupported] {
+      visibility: inherit;
+    }
+
+    .browser-note {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .after-steps {
+      list-style: none;
+      padding: 0;
+    }
+
+    .after-steps li {
+      display: flex;
+      gap: 0.5rem;
+      padding: 0.3rem 0;
+    }
+
+    .after-steps li::before {
+      content: "✓";
+      color: var(--green);
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    footer {
+      margin-top: 2rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-align: center;
+    }
+
+    footer a {
+      color: var(--green);
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Scout 80 Dash</h1>
+    <p>Web Installer — Waveshare ESP32-S3-Touch-LCD-7 · __VERSION__</p>
+  </header>
+
+  <!-- Step 1: What you need -->
+  <div class="card">
+    <h2><span class="step-number">1</span> What you need</h2>
+    <ul>
+      <li><strong>Waveshare ESP32-S3-Touch-LCD-7</strong> and a USB-C cable that supports
+          <strong>data transfer</strong> (charge-only cables won't connect)</li>
+      <li>Google <strong>Chrome</strong> or Microsoft <strong>Edge</strong> on a computer
+          (Firefox and Safari don't support Web Serial)</li>
+      <li>On Windows, the <strong>CH343</strong> USB-serial driver if the board doesn't
+          show up as a COM port</li>
+    </ul>
+    <div class="warning">
+      ⚠️ Set the board's <strong>UART DIP switch to USB</strong> before connecting.
+      The GPS module shares the same serial port, so the installer can't reach the
+      chip with the switch on GPS.
+    </div>
+  </div>
+
+  <!-- Step 2: Install -->
+  <div class="card">
+    <h2><span class="step-number">2</span> Install firmware</h2>
+    <div class="install-wrapper">
+      <esp-web-install-button manifest="manifest.json">
+        <span slot="unsupported">
+          ⚠️ Your browser doesn't support Web Serial.<br>
+          Please use <strong>Chrome</strong> or <strong>Edge</strong>.
+        </span>
+        <span slot="activate">
+          Click to Install Scout 80 Dash
+        </span>
+      </esp-web-install-button>
+      <p class="browser-note">
+        Pick the board's serial port when asked. Installing takes about a minute.
+      </p>
+    </div>
+    <div class="note">
+      <strong>Updating a dash you already use?</strong> Leave
+      <strong>"Erase device"</strong> unticked. Your settings, speed calibration and
+      odometer are kept.
+    </div>
+    <div class="warning">
+      ⚠️ <strong>"Erase device"</strong> wipes everything stored on the board: warning
+      thresholds, display settings, speed calibration, the <strong>odometer</strong> and
+      the CAN baseline. Only tick it for a new board or to recover from a bad install.
+      The SD card is not affected.
+    </div>
+  </div>
+
+  <!-- Step 3: After flashing -->
+  <div class="card">
+    <h2><span class="step-number">3</span> After installing</h2>
+    <ul class="after-steps">
+      <li>Set the UART DIP switch back to <strong>GPS</strong>, or the GPS module
+          won't be read</li>
+      <li>The dash restarts to the Scout splash screen, then the Speed screen</li>
+      <li>Check the version under <strong>Settings</strong> ("Firmware: …")</li>
+    </ul>
+    <div class="note">
+      Once the dash is installed in the truck, you can update it without USB: turn on
+      <strong>Settings › Display › WiFi Config</strong>, join
+      <code>Scout80-Config</code>, open <code>http://192.168.4.1/update</code> and
+      upload <code>firmware.bin</code> from the
+      <a href="https://github.com/robertwa1974/evScout--dash/releases" style="color: inherit;">latest release</a>.
+    </div>
+  </div>
+
+  <footer>
+    <a href="https://github.com/robertwa1974/evScout--dash" target="_blank">
+      View on GitHub
+    </a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/robertwa1974/evScout--dash/blob/main/USER_MANUAL.md" target="_blank">
+      User manual
+    </a>
+    &nbsp;·&nbsp;
+    Scout 80 Dash __VERSION__
+  </footer>
+
+</body>
+</html>
