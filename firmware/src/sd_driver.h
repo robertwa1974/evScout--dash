@@ -8,8 +8,8 @@
 // tile screen - see ui_navScreen.h / waveshare-dash-build.md for why a
 // real tile map is still blocked on real tile data, independent of this
 // driver existing). Deliberately scoped to mount + basic file I/O only -
-// no tile format or reading code yet, that's a follow-up once real map
-// tiles exist to test against.
+// each file format's reader lives with its consumer (index below). What
+// goes on the card and how to generate it: SD_CARD.md in the repo root.
 //
 // Known SD card directory conventions in this project (each documented in
 // full where it's actually consumed, this is just an index so they're not
@@ -17,6 +17,10 @@
 //   /maps/Z{zoom}_r{row}_c{col}.nav  - NAV vector map tiles, see
 //                                      nav_tile_format.h / CLAUDE.md's
 //                                      "Map tile format" section.
+//   /ROUTE/CAR/ROUTE.bin             - routing graph, see route_types.h
+//                                      (only the CAR profile is read).
+//   /charging/stations.bin           - charging stations, see
+//                                      charging_stations.h.
 //   /splash_frames/frame_00.bin..    - splash-screen truck-revolve
 //                                      animation frames (LVGL raw
 //                                      RGB565), see ui_splash_truck.h and
