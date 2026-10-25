@@ -5,12 +5,9 @@
 
 // GPS module driver (2026-09-14, Phase 1 of the architecture doc's GPS
 // requirement - see scout80-dash-architecture.md's hardware table).
-// Deliberately scoped to driver + NMEA parsing only - does NOT yet build
-// the GPS navigation screen (IceNav-v3-style map rendering needs map tile
-// assets that don't exist in this repo yet) or wire gpsData into the Clock
-// screen / day/night Auto resolution (resolveDisplayPref()'s TODO in
-// zombie_updaters.cpp) - both are natural follow-ups once this driver is
-// proven on real hardware, deferred rather than guessed at now.
+// Deliberately scoped to driver + NMEA parsing only - consumers (GPS, GPS
+// NAV, the splash clock, day/night Auto in zombie_updaters.cpp, odometer
+// fallback, speed calibration) read the gpsData global below.
 //
 // Wiring: this board's "UART1" (USB-C, via the onboard CH343 chip) and
 // "UART2" (a direct header for external modules) are NOT two separate
@@ -40,9 +37,8 @@ typedef struct {
     float    headingDeg;  // course over ground
     float    altitudeM;
     uint8_t  satellites;
-    // UTC date/time - earmarked for the future Clock screen and the
-    // day/night Auto resolution TODO in zombie_updaters.cpp, not consumed
-    // by anything yet.
+    // UTC date/time - used by the splash/nav clocks and day/night Auto's
+    // sunrise/sunset calculation (zombie_updaters.cpp).
     uint16_t year;
     uint8_t  month, day, hour, minute, second;
     uint32_t lastFixMs;    // millis() at the last sentence that updated a fix
