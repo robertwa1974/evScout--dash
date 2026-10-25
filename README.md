@@ -8,8 +8,10 @@ forked from.
 ## What it does
 
 - **Home cluster** — 400px speedometer (mph) with odometer and trip meter,
-  P R N D strip, SOC and inverter-temperature needle gauges, power / pack
-  V / pack A / 12V cards.
+  P R N D strip, SOC and inverter-temperature needle gauges, power /
+  range / pack A / 12V cards. Road speed is computed from motor rpm
+  (GPS-calibratable); trip, recent and lifetime Wh/mi drive the range
+  estimate.
 - **Telemetry screens** — Drive (with tap-to-edit gear, motor mode, regen
   limit and brake regen, mirroring the Zombieverter Dial), Status, Battery
   (cell-level), Charging, GPS.
@@ -19,18 +21,21 @@ forked from.
 - **0-60 / virtual dyno** — live timer plus a road-load vs. electrical
   power results chart.
 - **Settings** — warning thresholds, display (day/night, brightness, UTC
-  offset, WiFi), **VCU Parameters** (read/write ZombieVerter tunables over
+  offset, WiFi), road-speed **Calibration**, **VCU Parameters** (read/write ZombieVerter tunables over
   SDO, save to VCU flash), **Diagnostics** (~40 raw VCU values), **Data
   Logging** (CSV to SD) and a **CAN Monitor** (per-ID bus summary, light
   decoding of VCU / IVT-S / SimpBMS frames, known-good baseline with
   NEW / MISSING / RATE flags, raw capture in SavvyCAN CSV format).
 - **Local WiFi hotspot** (`Scout80-Config`, off by default) — config page,
-  live telemetry and log/capture downloads at `http://192.168.4.1`. No
+  live telemetry, log/capture downloads and firmware update at
+  `http://192.168.4.1`. No
   internet access; see `CLAUDE.md` → Networking.
 
 Hardware: Waveshare ESP32-S3-Touch-LCD-7 only (the upstream multi-board
 support was removed), microSD card, ZombieVerter VCU on CAN at 500 kbit,
 optional GPS module and MPU6050 IMU.
+
+For day-to-day use of the dash, see [`USER_MANUAL.md`](USER_MANUAL.md).
 
 For the full picture — architecture, hardware list, build-issue history,
 and every design decision along the way — read, in this order:
@@ -39,9 +44,9 @@ and every design decision along the way — read, in this order:
    screen layout, typography, touch-gesture quirks)
 2. [`scout80-dash-architecture.md`](scout80-dash-architecture.md) —
    system overview and hardware list
-3. [`waveshare-dash-build.md`](waveshare-dash-build.md) — the living build
-   log: every resolved toolchain/boot issue, milestone, and bug found on
-   real hardware
+3. [`waveshare-dash-build.md`](waveshare-dash-build.md) — hardware,
+   resolved toolchain issues, CAN/SDO design and current build status
+   (detailed history is in the git log and release tags)
 
 ## Fork lineage
 

@@ -9,11 +9,9 @@ extern "C" {
 #endif
 
 // SCREEN: ui_gpsScreen - GPS telemetry, 2x3 grid (CLAUDE.md screen layout
-// conventions, new 2026-09-14). Deliberately telemetry-only - NOT the
-// IceNav-v3-style offline map screen from the architecture doc's original
-// 7-screen plan, which needs map tile assets + SD card wiring neither of
-// which exist in this repo yet (see waveshare-dash-build.md). This is the
-// buildable-now piece: a fix-status pill, satellite count, speed, lat/lon,
+// conventions, new 2026-09-14). Deliberately telemetry-only - the offline
+// map and routing live on GPS NAV (ui_navScreen.h), the next screen in the
+// GPS group. This one shows a fix-status pill, satellite count, speed, lat/lon,
 // heading, and altitude, all sourced from gps_driver.h's gpsData.
 extern void ui_gpsScreen_screen_init(void);
 extern void ui_gpsScreen_screen_destroy(void);

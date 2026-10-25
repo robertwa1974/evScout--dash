@@ -1,11 +1,10 @@
 // ============================================================================
 // ui_gpsScreen.c - GPS telemetry, 2x3 grid
 // ============================================================================
-// Hand-written (2026-09-14), the buildable-now piece of the architecture
-// doc's GPS navigation screen plan - see ui_gpsScreen.h and
-// waveshare-dash-build.md for why the full IceNav-v3-style offline map
-// isn't built yet (needs map tile assets + SD card wiring, neither exist
-// in this repo). No SquareLine project (same situation as every other
+// Hand-written (2026-09-14), telemetry-only. Built before the offline map
+// existed; the map itself (NAV vector tiles from the SD card, routing) now
+// lives on the next screen, GPS NAV (ui_navScreen.cpp) - see CLAUDE.md's
+// "Map tile format". No SquareLine project (same situation as every other
 // hand-written screen in this repo).
 //
 // 2x3 grid of six equal 388x149 panels, same geometry as ui_driveScreen.c/

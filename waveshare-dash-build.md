@@ -7,7 +7,7 @@
 - **No onboard 12V power supply** — needs an external 12V→5V buck converter with reverse-polarity and load-dump protection
 - **Battery JST connector** is a LiPo backup/UPS circuit, not the main power path
 - **Mounting:** front-insert into the dash with a bezel flange and rear clamp — see Enclosure below (dash opening is being enlarged from 8"×3.5" to 203.2 × 118 mm — existing width kept, height opened up)
-- **GPS:** GY-NEO6MV2 (u-blox NEO-6M), ceramic 25 mm patch antenna on u.FL lead, 9600 baud TTL → UART1. Board measured 36.80 × 25.75 mm
+- **GPS:** GY-NEO6MV2 (u-blox NEO-6M), ceramic 25 mm patch antenna on u.FL lead, 9600 baud TTL on UART0 (GPIO43/44). That's the same UART as the USB flash/debug port, selected by the board's UART DIP switch: **GPS** for driving, **USB** to flash. See `gps_driver.h`. Board measured 36.80 × 25.75 mm
 - **IMU:** GY-521 (MPU-6050), I2C. Board measured 20.55 × 15.80 mm
 
 ## Enclosure
@@ -47,11 +47,11 @@ Final working `platformio.ini` config: platform pinned to pioarduino `54.03.21`,
 
 ## CAN/SDO architecture
 
-**Two data paths, confirmed against real ZombieVerter params.json data:**
+**All telemetry is SDO-polled** (decided 2026-09-13 after the bench session in `firmware/can-bench.md`: the spare VCU had no canmap, so nothing was broadcast). Every param the screens use is in the poll table in `zombie_updaters.{h,cpp}`. Each entry takes a 50 ms slot, shared alternately with on-demand reads and writes from `sdo_client.h`.
 
-1. **Passive CAN broadcast** (no polling needed) — SOC, pack voltage (`udc`), pack current (`idc`), motor temp (`tmpm`), heatsink temp (`tmphs`), motor RPM (confusingly named `speed`), 12V rail (`U12V`), `Gear`, `MotActive`, `regenmax`. These arrive automatically on fixed frame IDs (0x126, 0x210, 0x257, 0x300, 0x301, 0x302, 0x355, 0x356). A generic table-driven decoder (`can_broadcast.cpp`) extracts all matching fields per frame — this also fixes a latent bug in the original ZombieVerterDial code where the 0x356 frame's `udc`/`idc` were never decoded, only `tmpm`.
+**canmap broadcasts are decoded for the trace only** (v2.2.1). Rob's VCU does send canmap frames (0x355/0x356/0x126/0x210/0x257, 10 Hz). `can_broadcast.cpp` used to write them into `myData`, but with the gain inverted, so it overwrote good SDO values every 100 ms (e.g. udc 366 V shown as 3.2 V). Every one of those params is already SDO-polled at full resolution, so the broadcast path no longer touches `myData`. Found via the CAN Monitor's shunt-vs-VCU cross-check.
 
-2. **Active SDO polling** (only for params with no broadcast frame) — real vehicle speed (`Veh_Speed`, kph — distinct from the broadcast "speed" which is motor RPM), `opmode`, `power`, `lastErr`.
+**Road speed is not from the VCU.** With Vehicle = Classic, `Veh_Speed` is never set, so the dash computes speed from motor rpm (`speed`) per LS600h range. See `speed_cal.h` and CLAUDE.md's Speed screen entry.
 
 **SDO wire encoding**, confirmed directly from Rob's own working Dial firmware (`SDOManager.cpp`), not guessed:
 - `index = 0x2100 | (paramId >> 8)`, `subindex = paramId & 0xFF`
@@ -60,15 +60,9 @@ Final working `platformio.ini` config: platform pinned to pioarduino `54.03.21`,
 
 **Decision:** port CAN/SDO logic from Rob's own working Dial firmware as the primary source. External reference projects (`jamiejones85/ZombieVerterDisplay`, OVMS's CANopen client) are cross-reference only, for spotting gaps — not the source of truth, since firmware-version drift makes borrowed SDO code risky.
 
-## Screen plan (7 total)
+## Screens (12, all built)
 
-1. Central telemetry summary
-2. BMS detail
-3. Splash/logo
-4. Clock
-5. GPS navigation (`jgauchia/IceNav-v3` as offline-map rendering reference)
-6. 0-60 / virtual dyno
-7. Settings
+The original 7-screen plan grew into: Splash/Clock, Settings, Speed (home), Drive, Status, Battery, Charging, GPS, GPS NAV, Destinations, Dyno LIVE and Dyno RESULTS. All are hand-written LVGL; none came from SquareLine Studio. Layout rules and the reasons behind each screen are in CLAUDE.md; operating instructions are in `USER_MANUAL.md`.
 
 ### 0-60 / virtual dyno design
 - Needs an added I2C accelerometer (launch detection, acceleration curve — GPS alone is too slow/imprecise) plus GPS (absolute speed cross-check, road-grade correction)
@@ -80,17 +74,26 @@ Final working `platformio.ini` config: platform pinned to pioarduino `54.03.21`,
 
 - **Immobilizer** (RFID/BLE) stays on the M5 Stack Dial only — never duplicated on the Waveshare
 - **Audio** (Bluetooth phone streaming + local SD file playback) is a fully standalone module, independent of the Waveshare's CAN bus and GPIO entirely — the ESP32-S3 has no classic Bluetooth (BLE only) and this board has no I2S/speaker header
-- GPS module connects via the Waveshare's dedicated UART1 header
+- GPS module shares UART0 with the USB port via the board's UART DIP switch (see Hardware above)
 
-## Build status
+## Build status (v2.2.1, 2026-10-24)
 
-Firmware compiles clean end-to-end as of the fixes above — full toolchain, all third-party libraries, the ported CAN broadcast decoder and SDO client, and the cleaned-up uaDASH UI scaffold (bench-test and engine-config screens fully removed, since they have no EV equivalent).
+The firmware is in use on real hardware with the real VCU. Releases are tagged in git (`v2.0`, `v2.1`, `v2.2`, `v2.2.1`); the git log is the detailed history.
 
-Enclosure v2 designed (case + bezel flange, rear carrier with standoff-located sockets and GPS + IMU pockets at measured sizes, antenna pod) plus 1:1 dash cut-out template — not yet printed, cut or test-fitted.
+**Done:**
+- Boots and runs on the Waveshare-7. Display, touch, swipe and dock navigation, and NVS settings persistence all verified on hardware.
+- CAN/SDO validated against a real ZombieVerter (`firmware/can-bench.md`). Telemetry is all-SDO; canmap broadcasts are trace-only (see CAN/SDO above).
+- All 12 screens built by hand in LVGL. SquareLine Studio was dropped.
+- GPS (real NEO-6M plus the `mock-gps` build), MPU-6050 IMU launch detection, and the 0-60 LIVE/RESULTS dyno.
+- microSD with offline NAV vector map tiles for California, routing, and a San Diego charging-station dataset.
+- Cluster home screen with odometer/trip, road speed from motor rpm with GPS calibration, and Wh/mi efficiency plus range.
+- Settings: warning thresholds, display, speed calibration, VCU Parameters (SDO read/write plus save to flash, interlocked), Diagnostics, CAN Monitor (decode, baseline, SavvyCAN capture) and Data Logging.
+- Local WiFi hotspot with a config page, live telemetry, log/capture downloads and **firmware update over WiFi** (`/update`, v2.1). The update writes the inactive OTA slot and is verified by ESP-IDF before reboot.
 
-**Next milestones:**
-1. Flash and confirm it still boots/runs identically to the original stock uaDASH build (display, touch, swipe nav, settings persistence)
-2. Bench-validate the CAN broadcast decoder and SDO polling against real ZombieVerter traffic (needs either the actual VCU on a bench, or a CAN tool that can replay/inject frames matching the broadcast IDs above)
-3. Build the actual screens in SquareLine Studio, starting with the central telemetry summary
-4. Wire GPS and the dyno-screen accelerometer; print and test-fit the enclosure (buy M3 × 6 male-female hex standoffs + M3 × 8 screws); cut the dash from the template
-5. Harden OTA (dual-partition, rollback-safe) before final bezel mount, since the board will be physically inconvenient to reflash once installed
+**Still open:**
+- **OTA rollback.** This Arduino core has no bootloader rollback. A valid build that crashes on boot still needs a USB flash to recover, so keep USB access until that's solved or the build is trusted.
+- **Dyno calibration workflow** (fit correction constants from a real chassis-dyno pull). The Settings › Calibration entry is still a disabled "Not built yet" button.
+- **In-truck verification** of data-logging arm, efficiency/range, IVT-S decoding and the odometer. All are bench-tested but need the VCU in Run and real driving.
+- **Map:** only zoom 16, no LOD, polygon holes not drawn.
+- **Battery screen:** no per-cell bar grid; the CAN data has no per-cell array.
+- **Enclosure v2** (case + bezel flange, rear carrier, GPS/IMU pockets, antenna pod, 1:1 cut-out template) is printed and fitted, but **not yet installed** in the dash.

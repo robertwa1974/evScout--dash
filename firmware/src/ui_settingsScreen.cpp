@@ -6,7 +6,8 @@
 // (milestone-1 decision, 2026-09-06: "leave settings for the redesign" -
 // this is that redesign). Per CLAUDE.md:
 //
-//   lv_menu with 3 lv_menu_section groups:
+//   lv_menu, a root list of sub-pages (one per section, see the sub-page
+//   split note below):
 //     1. WARNING THRESHOLDS - low SOC / high motor temp / high heatsink
 //        temp / low pack voltage, each an lv_spinbox driven by +/- buttons
 //        (never direct tap-to-type - no keyboard popup while driving).
@@ -18,11 +19,14 @@
 //        offset, and a WiFi Config toggle (2026-09-22 - see
 //        wifi_config_server.h: a local-only AP + web page for editing
 //        vehicle_config.h's values without a reflash).
-//     3. CALIBRATION - dyno workflow entry point (stub - the dyno screens
-//        haven't been built yet).
-//     4-6. VCU PARAMETERS / DIAGNOSTICS / DATA LOGGING (2026-10-21) - each
-//        built in its own file (ui_settingsVcuParams.cpp,
-//        ui_settingsDiagnostics.cpp, ui_settingsLogging.cpp) via
+//     3. CALIBRATION - road-speed calibration (2026-10-24, built in
+//        ui_settingsSpeedCal.cpp) plus a disabled entry point for the dyno
+//        drivetrain-calibration workflow (still a stub - the dyno LIVE/
+//        RESULTS screens are built, the calibration math isn't).
+//     4-7. VCU PARAMETERS / DIAGNOSTICS / CAN MONITOR / DATA LOGGING
+//        (2026-10-21/22) - each built in its own file
+//        (ui_settingsVcuParams.cpp, ui_settingsDiagnostics.cpp,
+//        ui_settingsCanMonitor.cpp, ui_settingsLogging.cpp) via
 //        ui_settings_common.h; this file only adds their root-list rows and
 //        tells them when their page is shown/hidden (menuPageChangedCb()).
 //
@@ -549,10 +553,9 @@ void ui_settingsScreen_screen_init(void)
     lv_obj_set_style_text_color(dayNightLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(dayNightLabel, &font_montserrat_extrabold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_flex_grow(dayNightLabel, 1);
-    // TODO: "Auto" currently always resolves to Day - no RTC or light
-    // sensor on this board yet. See resolveDisplayPref() in
-    // zombie_updaters.cpp. The 3-way control and persistence are already
-    // wired for real; only the resolution logic needs a sensor later.
+    // "Auto" switches at sunrise/sunset computed from the GPS fix's
+    // position and UTC date/time, and stays Day until a fix has been seen -
+    // see resolveDisplayPref() in zombie_updaters.cpp.
     autoBtn = createDayNightBtn(dayNightRow, "Auto", DISPLAY_PREF_AUTO);
     dayBtn = createDayNightBtn(dayNightRow, "Day", DISPLAY_PREF_DAY);
     nightBtn = createDayNightBtn(dayNightRow, "Night", DISPLAY_PREF_NIGHT);
@@ -630,7 +633,8 @@ void ui_settingsScreen_screen_init(void)
     // Stub - specifically the CALIBRATION workflow (enter real chassis-dyno
     // numbers, solve for correction constants - architecture doc's third
     // dyno mode). The LIVE + RESULTS screens (ui_dynoLiveScreen.cpp /
-    // ui_dynoResultsScreen.cpp, reachable via BMS screen swipe-left) are
+    // ui_dynoResultsScreen.cpp, reachable via the DYNO dock icon or a swipe
+    // on from Destinations) are
     // built and functional; this entry point stays disabled until the
     // separate calibration-math workflow is too.
     lv_obj_t *calBtn = lv_btn_create(calRow);
