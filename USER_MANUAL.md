@@ -196,7 +196,9 @@ This is a local-only connection: the dash never connects to the internet through
 | Data Logging is on but no file appears | Logging waits for live CAN data and the VCU to leave Off. Also check the SD card is inserted. |
 | Dyno won't arm/respond to a tap | Make sure you're tapping the screen itself, not mid-swipe. |
 | Firmware update says "Not an app firmware file" | You picked the merged image. Use `firmware.bin` from the release. |
-| "No charging data loaded" on Destinations | The charging-station file is missing from the SD card or needs regenerating. It's prepared ahead of time from an online database, not fetched live, and currently only covers San Diego County. |
+| "No charging data loaded" on Destinations | The charging-station file is missing from the SD card or needs regenerating. It's prepared ahead of time from an online database, not fetched live, and currently only covers San Diego County. See [SD_CARD.md](SD_CARD.md). |
+| GPS NAV shows no map, or routes never compute | The map tiles or routing file are missing from the SD card. See [SD_CARD.md](SD_CARD.md) for what goes where. |
+| Splash screen sits for a long time without the truck animation | The splash frames are missing from the SD card, or there's no card. The dash moves on after 45 seconds. See [SD_CARD.md](SD_CARD.md). |
 | Screen too dim/bright | Swipe up or down on most screens, or use the brightness slider in Settings. |
 | Low-12V warning seems wrong | If your vehicle has no working 12V sensor, turn off Low 12V Shutdown in Settings. Otherwise the dash can't tell a missing sensor apart from a real dying battery. |
 

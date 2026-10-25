@@ -35,7 +35,9 @@ Hardware: Waveshare ESP32-S3-Touch-LCD-7 only (the upstream multi-board
 support was removed), microSD card, ZombieVerter VCU on CAN at 500 kbit,
 optional GPS module and MPU6050 IMU.
 
-For day-to-day use of the dash, see [`USER_MANUAL.md`](USER_MANUAL.md).
+For day-to-day use of the dash, see [`USER_MANUAL.md`](USER_MANUAL.md). For
+what goes on the microSD card (maps, routing, charging stations, splash
+frames) and how to regenerate it, see [`SD_CARD.md`](SD_CARD.md).
 
 For the full picture — architecture, hardware list, build-issue history,
 and every design decision along the way — read, in this order:
