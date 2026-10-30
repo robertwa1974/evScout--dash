@@ -906,6 +906,8 @@ void getWarningsSet() {
     warningSet.motorTemp    = preferences.getInt("motorT", DEF_WARN_MOTOR_TEMP);
     warningSet.heatsinkTemp = preferences.getInt("hsT", DEF_WARN_HEATSINK_TEMP);
     warningSet.packVLow     = preferences.getFloat("packVLo", DEF_WARN_PACK_V_LOW);
+    warningSet.pitchDeg     = preferences.getInt("pitchDeg", DEF_WARN_PITCH_DEG);
+    warningSet.rollDeg      = preferences.getInt("rollDeg", DEF_WARN_ROLL_DEG);
     // Same "warn" namespace, separate key - see zombie_updaters.h's comment
     // on lowVoltageShutdownEnabled for why this exists and why it's read
     // here (at boot, alongside the other warning settings) but written by
@@ -921,6 +923,8 @@ void updateWarningsSet() {
     preferences.putInt("motorT", warningSet.motorTemp);
     preferences.putInt("hsT", warningSet.heatsinkTemp);
     preferences.putFloat("packVLo", warningSet.packVLow);
+    preferences.putInt("pitchDeg", warningSet.pitchDeg);
+    preferences.putInt("rollDeg", warningSet.rollDeg);
     preferences.end();
 }
 
@@ -936,6 +940,8 @@ void setDefaultWarnSet() {
     warningSet.motorTemp    = DEF_WARN_MOTOR_TEMP;
     warningSet.heatsinkTemp = DEF_WARN_HEATSINK_TEMP;
     warningSet.packVLow     = DEF_WARN_PACK_V_LOW;
+    warningSet.pitchDeg     = DEF_WARN_PITCH_DEG;
+    warningSet.rollDeg      = DEF_WARN_ROLL_DEG;
     updateWarningsSet();
 }
 

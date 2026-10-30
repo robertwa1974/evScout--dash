@@ -1,4 +1,5 @@
 #include "display_driver.h"
+#include "mutex.h"  // i2cMutex - touch shares I2C_NUM_0 with the IMU
 
 
 // Dislay driver config
@@ -155,7 +156,13 @@ void disp_flush_callback(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t 
 void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
   int32_t x, y;
   data->state = LV_INDEV_STATE_REL;
-  if (display.getTouch(&x, &y)) {
+  // Shared bus with the IMU task - see imu_driver.h's concurrency comment.
+  bool touched = false;
+  if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) {
+    touched = display.getTouch(&x, &y);
+    xSemaphoreGive(i2cMutex);
+  }
+  if (touched) {
     data->state = LV_INDEV_STATE_PR;
     data->point.x = x;
     data->point.y = y;

@@ -98,6 +98,9 @@ void ui_theme_set(ui_theme_mode_t mode) {
     if (ui_driveScreen != NULL) {
         ui_driveScreen_refresh_theme();
     }
+    if (ui_inclineScreen != NULL) {
+        ui_inclineScreen_refresh_theme();
+    }
     if (ui_statusScreen != NULL) {
         ui_statusScreen_refresh_theme();
     }

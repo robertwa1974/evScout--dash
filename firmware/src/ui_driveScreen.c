@@ -39,7 +39,8 @@
 //
 // Navigation, following the approved topology (Settings <-> Speed(home) <->
 // Drive <-> Status <-> Battery <-> Dyno LIVE -> Dyno RESULTS): physical
-// swipe LEFT -> Speed (back), physical swipe RIGHT -> Status (forward).
+// swipe LEFT -> Speed (back), physical swipe RIGHT -> Incline (forward -
+// was Status until the Incline screen went in between, 2026-10-29).
 // This board reports gesture direction inverted from the physical swipe
 // (see CLAUDE.md's "Touch gesture direction") - the code checks
 // LV_DIR_RIGHT for the physical-LEFT swipe and LV_DIR_LEFT for the
@@ -109,7 +110,7 @@ void ui_event_driveScreen(lv_event_t * e)
     }
     if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_LEFT) {
         lv_indev_wait_release(lv_indev_get_act());
-        _ui_screen_change(&ui_statusScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_statusScreen_screen_init);
+        _ui_screen_change(&ui_inclineScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 500, 0, &ui_inclineScreen_screen_init);
         _ui_screen_delete(&ui_driveScreen);
     }
 }

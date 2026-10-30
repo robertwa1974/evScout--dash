@@ -1,0 +1,3 @@
+# Source renders for convert_incline_art.py - kept out of git, only the
+# generated masks (firmware/src/img_incline_scout.c/.h) are committed.
+*.png

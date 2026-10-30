@@ -6,9 +6,10 @@
 
 SemaphoreHandle_t dataMutex = xSemaphoreCreateMutex();
 SemaphoreHandle_t uiMutex = xSemaphoreCreateMutex();
+SemaphoreHandle_t i2cMutex = xSemaphoreCreateMutex();
 
 void mutex_init() {
-  if (dataMutex == NULL || uiMutex == NULL) {
+  if (dataMutex == NULL || uiMutex == NULL || i2cMutex == NULL) {
 #ifdef DEBUG
     Serial.println("Failed Mutex init");
 #endif

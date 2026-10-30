@@ -89,6 +89,10 @@
 #define DEF_WARN_MOTOR_TEMP     140     // deg C (tmpm)
 #define DEF_WARN_HEATSINK_TEMP  85      // deg C (tmphs)
 #define DEF_WARN_PACK_V_LOW     280.0   // volts - TODO tune to your pack
+// Incline screen (2026-10-29): amber from 75% of these, red at them. A
+// starting point to tune for your own vehicle, NOT a rollover/safe limit.
+#define DEF_WARN_PITCH_DEG      25      // degrees, either direction
+#define DEF_WARN_ROLL_DEG       20      // degrees, either side
 
 // --- Live telemetry ---------------------------------------------------------
 // All fields are filled by the SDO poll cycle (see the pollTable comment in
@@ -137,6 +141,8 @@ typedef struct warning_set {
     int   motorTemp;
     int   heatsinkTemp;
     float packVLow;
+    int   pitchDeg;
+    int   rollDeg;
 } warning_set;
 
 extern struct_message myData;

@@ -142,6 +142,15 @@ To replace them with new renders:
 3. Check them with `python firmware\assets\preview_splash_frames.py`.
 4. Copy `frame_*.bin` to `\splash_frames\` on the card.
 
+**Wireframe version (trial, 2026-10-29).** A line-art turntable in the Incline screen's style, rendered from a simple 3D model of the truck instead of photo-real renders, is at `firmware/assets/splash_frames_wireframe_out/`. To try it, keep the card's current `\splash_frames\` as `\splash_frames_photo\` and copy the wireframe `frame_*.bin` into `\splash_frames\`; to go back, copy the photo set back. To regenerate:
+
+```
+python firmware\assets\gen_splash_wireframe.py
+python firmware\assets\convert_splash_frames.py firmware\assets\splash_wireframe_png -o firmware\assets\splash_frames_wireframe_out --size 240 --bg-threshold 0
+```
+
+`--bg-threshold 0` matters here: the background is already pure black, and the default threshold would eat the lines' antialiased edges.
+
 The firmware expects **exactly 22 frames** (`UI_SPLASH_TRUCK_FRAME_COUNT`) at the size set by `UI_SPLASH_TRUCK_FRAME_SIZE`, both in `ui_splash_truck.h`. A different count or size needs those changed and a rebuild. The splash logo (`img_scout_logo.c`) and the fonts are compiled into the firmware and don't come from the card.
 
 ## Files the dash writes

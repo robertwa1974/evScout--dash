@@ -85,7 +85,7 @@ from pathlib import Path
 from PIL import Image
 
 LV_IMG_CF_TRUE_COLOR = 4
-DEFAULT_SIZE = 320
+DEFAULT_SIZE = 240  # must match UI_SPLASH_TRUCK_FRAME_SIZE (ui_splash_truck.h) - was a stale 320
 FRAME_COUNT_EXPECTED = 22  # informational only - the script still runs with a different count, just warns
 
 

@@ -27,6 +27,7 @@ extern "C" {
 
 #include "ui_speedScreen.h"
 #include "ui_driveScreen.h"
+#include "ui_inclineScreen.h"
 #include "ui_statusScreen.h"
 #include "ui_batteryScreen.h"
 #include "ui_chargingScreen.h"
