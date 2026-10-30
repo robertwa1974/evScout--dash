@@ -3,19 +3,19 @@
 //  Base case: VaAndCob/ESP32-S3-Mastermind  waveshare7_3D/waveshare_7_case.stl (MIT)
 //
 //  Parts (pick with PART below, F6 render, then File > Export > STL):
-//    "case"     original back shell + front bezel flange
-//    "box"      board box: GY-NEO6MV2 GPS + GY-521 IMU clip in; stuck to the case
-//               back with VHB; wire window + antenna-lead notches
-//    "lid"      screw-on lid for the box (2x M3 self-tapping)
-//    "clamps"   two separate clamp bars: each drops over two hex standoffs and
-//               pinches the dash panel against the bezel (one STL, print both)
-//    "pod"      GPS patch-antenna pod (25x25 ceramic patch, faces up)
+//    "case"     original back shell + front bezel flange + front-lip relief
+//               + 4 captive-nut bosses inside the floor for bolting the box on
+//    "box"      board box (v8: mirrored, wire windows both sides, no drum, SMA through the plain wall): GPS + IMU pockets, cable bay with SMA bulkhead,
+//               wire windows in both bay side walls, 4 bolt-down feet
+//    "lid"      lid for the box (4x M3 self-tapping)
+//    "clamps"   two separate clamp bars (one STL, print both)
+//    "pod"      GPS patch-antenna pod (only if you use the ceramic patch)
 //    "assembly" everything in place, with a ghost dash panel (preview only)
-//    ("tray" / "carrier" = superseded v4 parts, kept for reference)
 //
-//  Bench: standoffs in, boards wired into the box, lid on, box stuck on the case back.
+//  Bench: M3 nuts into the case bosses, standoffs in, boards + SMA pigtail into the box,
+//         lid on, box bolted to the case back (4x M3).
 //  Car:   slide case in from the front, drop each clamp bar over its two standoffs,
-//         2 screws per bar. The box stays exposed in the middle.
+//         2 screws per bar. Box and SMA stay reachable between the bars.
 //
 //  Coordinate frame = original STL:
 //    X = width (-98.5..98.5), Y = height (0..115), Z = depth.
@@ -73,9 +73,11 @@ bar_y1        = 105;    // top edge (clears the open recess at x -15..24, y >= 1
 
 // ---------------- board tray ----------------
 gps_pcb       = [36.45, 26.10]; // measured (re-checked); long side along X, 4-pin header end toward the wiring hole
-gps_c         = [-11, 86.5];    // pocket centre on the case back (X,Y)
+box_xc        = 2.3375;           // box centre line (set mirror_layout = true to swap GPS/IMU sides)
+mirror_layout = true;    // v8: GPS on the right, IMU on the left
+gps_c         = [mirror_layout ? 2*box_xc + 11 : -11, 86.5];    // pocket centre on the case back (X,Y)
 imu_pcb       = [15.80, 20.55]; // measured, turned 90°: 8-pin header edge faces the wiring hole
-imu_c         = [26, 86.5];
+imu_c         = [mirror_layout ? 2*box_xc - 26 : 26, 86.5];
 pcb_t         = 1.6;
 pcb_clear     = 0.8;    // total XY clearance in each pocket (0.4 per side; FDM pockets print undersize)
 ledge         = 1.5;    // PCB seat width around the pocket
@@ -96,7 +98,7 @@ pad_gap       = 0.2;    // carrier pads stop this far off the tray walls
 case_cable_hole = false;        // legacy floor hole (off)
 cable_hole_c    = [6.5, 86.5];  // only used if case_cable_hole = true
 cable_hole_d    = 8;
-wire_x          = 12.75;        // centre of the shared wire channel / exit (between the pockets)
+wire_x          = mirror_layout ? 2*box_xc - 12.75 : 12.75;   // shared wire channel / exit between the pockets
 wire_gap        = 10;           // openings in the pocket walls facing the channel
 exit_w          = 9;            // width of the exit through the tray's lower wall
 notch_h         = 4;            // height of the carrier notch the wires pass under
@@ -137,12 +139,26 @@ module flange() {
     }
 }
 
+// front-lip relief: the glass recess measured 192.95 x 111.0 mm, 1.2 mm deep (z 17.3..18.5)
+lip_open   = [192.95, 111.0];
+lip_ctr    = [0.025, 57.55];
+lip_relief = [0.35, 0.35];   // extra clearance per side, X and Y
+lip_z0     = 17.0;           // a little below the recess floor so the step corner is cleared too
 module case_mod() {
     difference() {
         union() {
             import(CASE_STL, convexity = 10);
             flange();
+            for (f = feet) translate([f[0], f[1], 1.4]) cylinder(d = boss_d, h = boss_h + 0.1);
         }
+        // bolt-down holes and nut pockets (nut drops in from the inside, before the board goes in)
+        for (f = feet) translate([f[0], f[1], 0]) {
+            translate([0, 0, case_z0 - 1]) cylinder(d = foot_hole, h = 2 + boss_h + 2);
+            translate([0, 0, 1.5 + boss_h - nut_h]) rotate([0, 0, 30]) cylinder(d = nut_af / cos(30), h = nut_h + 1, $fn = 6);
+        }
+        translate([lip_ctr[0] - lip_open[0]/2 - lip_relief[0], lip_ctr[1] - lip_open[1]/2 - lip_relief[1], lip_z0])
+            linear_extrude(case_z1 - lip_z0 + 1)
+                rrect([lip_open[0] + 2*lip_relief[0], lip_open[1] + 2*lip_relief[1]], 8.5);
         if (case_cable_hole) translate([cable_hole_c[0], cable_hole_c[1], case_z0 - 1])
             cylinder(d = cable_hole_d, h = 4);
     }
@@ -309,6 +325,85 @@ clamp_t   = max(10, standoff_len + socket_extra + back_web);
 module box_outline(grow = 0) { offset(delta = grow) rrect([tray_x1 - tray_x0, tray_y1 - tray_y0], 2); }
 function ear_pos() = [[-ear_out, (tray_y1 - tray_y0)/2], [tray_x1 - tray_x0 + ear_out, (tray_y1 - tray_y0)/2]];
 
+// ---- v6: cable bay below the boards with an SMA bulkhead in its lower wall ----
+bay_len    = 28;      // bay extends this far below the board pockets (toward the bottom of the display)
+box_h6     = 14;      // wall top above the box floor (was box_h = 10.6): room for the SMA hex
+bay_floor  = 1.5;
+sma_x      = mirror_layout ? 2*box_xc - 5 : 5;   // SMA axis X on the case back
+sma_z      = 7.5;     // SMA axis height above the box floor
+sma_hole_d = 6.5;     // 1/4"-36 thread
+sma_flat   = 5.8;     // D-flat across (set = sma_hole_d for a round hole)
+sma_hex_af = 8.3;     // inside hex flange pocket, stops the connector turning while you tighten the nut
+sma_boss_t = 0;    sma_hex_d = 2.0;   // v8: no boss, the SMA goes through the plain wall (more thread outside)
+bay_win    = [11, 6]; // wire windows in both side walls of the bay, same height and position
+// (v7: cable drum removed: the RG178 lead loops loosely in the bay)
+// bolt-down: 4 feet on the box base, captive M3 nuts in bosses inside the case floor
+feet       = [[-36.6, 98], [41.3, 98], [-26, 38.05], [30, 38.05]];   // case coords, all on plain 2 mm floor
+foot_d     = 9;   foot_t = 3;   foot_hole = 3.4;
+nut_af     = 5.65;          // M3 nut 5.5 AF: slight press fit so the nut stays put
+nut_h      = 2.6;
+boss_d     = 10;  boss_h = 3.6;   // above the inside floor face (z 1.5)
+W6 = tray_x1 - tray_x0;  H6 = tray_y1 - tray_y0 + bay_len;
+module box6_outline(grow = 0) { translate([0, -bay_len]) offset(delta = grow) rrect([W6, H6], 2); }
+function sx(x) = x - tray_x0;              // case X -> box coords
+
+module box6_base() {
+    difference() {
+        union() {
+            tray();
+            linear_extrude(box_h6) difference() { box6_outline(); box6_outline(-tray_wall); }
+            linear_extrude(bay_floor) intersection() { box6_outline(); translate([0, -bay_len]) square([W6, bay_len + 0.01]); }
+            for (e = ear_pos()) translate([e[0], e[1], 0]) cylinder(d = ear_d, h = box_h6);
+            // internal lid-screw bosses in the bay's lower corners
+            for (bx = [6, W6 - 6]) translate([bx, -bay_len + 6, 0]) cylinder(d = 7.5, h = box_h6);
+            // SMA boss on the inside of the lower wall
+            if (sma_boss_t > 0) translate([sx(sma_x) - 7.5, -bay_len + tray_wall - 0.01, 0]) cube([15, sma_boss_t, sma_z + 5]);
+            // bolt-down feet
+            for (f = feet) linear_extrude(foot_t) hull() {
+                translate([sx(f[0]), f[1] - tray_y0]) circle(d = foot_d);
+                translate([min(max(sx(f[0]), 2), W6 - 2), min(max(f[1] - tray_y0, -bay_len + 2), H6 - bay_len - 2)]) circle(d = foot_d);
+            }
+        }
+        // SMA hole (D-flat on top) through wall + boss
+        translate([sx(sma_x), -bay_len - 1, sma_z]) rotate([-90, 0, 0])
+            intersection() {
+                cylinder(d = sma_hole_d, h = tray_wall + sma_boss_t + 2);
+                translate([-sma_hole_d/2, -sma_flat/2, 0]) cube([sma_hole_d, sma_hole_d, tray_wall + sma_boss_t + 2]);
+            }
+        // hex pocket for the bulkhead flange, on the inside face of the boss
+        if (sma_boss_t > 0) translate([sx(sma_x), -bay_len + tray_wall + sma_boss_t - sma_hex_d, sma_z]) rotate([-90, 0, 0])
+            rotate([0, 0, 30]) cylinder(d = sma_hex_af / cos(30), h = sma_hex_d + 1, $fn = 6);
+        // wire windows in both side walls of the bay
+        for (wx = [-1, W6 - tray_wall - 1])
+            translate([wx, -bay_len/2 - bay_win[0]/2, bay_floor]) cube([tray_wall + 2, bay_win[0], bay_win[1]]);
+        // lid screw pilots
+        for (e = ear_pos()) translate([e[0], e[1], 1]) cylinder(d = pilot_d, h = box_h6);
+        for (bx = [6, W6 - 6]) translate([bx, -bay_len + 6, 1]) cylinder(d = pilot_d, h = box_h6);
+        for (f = feet) translate([sx(f[0]), f[1] - tray_y0, -1]) cylinder(d = foot_hole, h = foot_t + 2);
+    }
+}
+
+module box6_lid() {
+    difference() {
+        union() {
+            linear_extrude(lid_t) union() {
+                box6_outline();
+                for (e = ear_pos()) translate(e) circle(d = ear_d);
+            }
+            translate([0, 0, lid_t - 0.01]) linear_extrude(lip_h + 0.01) difference() {
+                box6_outline(-(tray_wall + lid_clear));
+                box6_outline(-(tray_wall + lid_clear + lip_w));
+                for (bx = [6, W6 - 6]) translate([bx, -bay_len + 6]) circle(d = 9);
+                translate([sx(sma_x) - 8.5, -bay_len]) square([17, tray_wall + sma_boss_t + 1.5]);
+            }
+        }
+        for (e = ear_pos()) translate([e[0], e[1], -1]) cylinder(d = 3.4, h = lid_t + 2);
+        for (bx = [6, W6 - 6]) translate([bx, -bay_len + 6, -1]) cylinder(d = 3.4, h = lid_t + 2);
+    }
+}
+module box6_installed() { translate([tray_x0, tray_y0, case_z0 - vhb_t]) mirror([0, 0, 1]) box6_base(); }
+module lid6_installed() { translate([tray_x0, tray_y0, case_z0 - vhb_t - box_h6 - lid_t]) mirror([0,0,1]) mirror([0,0,1]) box6_lid(); }
+
 // print orientation: floor on the bed, opening up
 module box_base() {
     difference() {
@@ -410,18 +505,15 @@ module ghost_panel() {
 }
 
 if (PART == "case")          case_mod();
-else if (PART == "box")      box_base();
-else if (PART == "lid")      box_lid();
+else if (PART == "box")      box6_base();
+else if (PART == "lid")      box6_lid();
 else if (PART == "clamps")   clamps();
 else if (PART == "pod")      pod();
-else if (PART == "tray")     tray();        // v4, superseded by box
-else if (PART == "carrier")  carrier();     // v4, superseded by clamps
 else if (PART == "assembly") {
     color("DarkOrange") case_mod();
-    color("Gold") box_installed();
-    color("Khaki") lid_installed();
+    color("Gold") box6_installed();
+    color("Khaki") lid6_installed();
     color("SteelBlue") clamps();
-    color("SeaGreen") translate([0, case_h + 30, 0]) rotate([90, 0, 0]) pod();
     ghost_panel();
 }
 
@@ -430,5 +522,6 @@ echo(str("Dash cut-out: 203.2 (existing width) x ", case_h + 2*cut_clear, " mm, 
 echo(str("Bezel outer size: ", case_w + 2*flange_w, " x ", case_h + 2*flange_w, " mm"));
 echo(str("Panel rear face at Z=", panel_back_z, "; feet stop at Z=", foot_z1));
 echo(str("Clamp bars: ", clamp_t, " mm thick; screws M3 x 8"));
-echo(str("Box: ", tray_x1 - tray_x0, " x ", tray_y1 - tray_y0, " x ", box_h + lid_t, " mm with lid (", box_h + lid_t + vhb_t, " mm off the case back incl. VHB)"));
+echo(str("Box: ", W6, " x ", H6, " x ", box_h6 + lid_t, " mm with lid (", box_h6 + lid_t + vhb_t, " mm off the case back incl. pad)"));
+echo(str("Box bolts: 4x M3 x ", ceil(foot_t + vhb_t + 2 + (boss_h - nut_h) + nut_h), " into captive M3 nuts in the case"));
 echo(str("Tray: ", tray_x1 - tray_x0, " x ", tray_y1 - tray_y0, " x ", tray_h, " mm"));
