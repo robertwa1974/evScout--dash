@@ -11,7 +11,7 @@ The dash boots to a splash screen with the Scout logo and a clock, then moves on
 **The bottom dock.** Every screen except the splash has a row of 5 icons pinned to the bottom: **Telemetry, BMS (battery), GPS, Dyno, Settings**. Tap any icon to jump straight to that group. The highlighted icon shows which group you're currently in.
 
 **Swiping between screens.** Several screens are grouped together and reached by swiping left/right within a group, not through the dock:
-- Telemetry group: Speed → Drive → Status → Charging
+- Telemetry group: Speed → Drive → Incline → Status → Charging
 - GPS group: GPS → GPS NAV → Destinations
 - BMS group: Battery only
 - Dyno group: 0-60 LIVE → RESULTS (RESULTS opens automatically when a run finishes)
@@ -30,6 +30,7 @@ The dock always jumps to that group's *home* screen (Speed, Battery, GPS, Dyno L
 | --- | --- |
 | **Speed** (home) | Two-dial cluster. Left: speedometer in mph, with the odometer above and the trip meter below. Right: P R N D position, SOC and inverter-temperature gauges, and **Power**, **Range**, **Pack A** (pack current) and **12V** cards. This is the default screen. |
 | **Drive** | Power, pack current, gear selection, motor mode, regen limit and brake regen. The last four are **tap-to-edit** (see below). |
+| **Incline** | Pitch and roll in degrees, each drawn as a Scout outline that tilts with the truck. Needs the IMU and its level calibration (see below). |
 | **Status** | State-of-charge, pack voltage, 12V aux voltage, and motor/inverter/battery temperatures: the vehicle's vitals at a glance. |
 | **Battery** | Cell-level detail: state-of-charge ring, charging/discharging/idle status, max/min cell voltage, cell voltage spread, and max cell temperature. |
 | **Charging** | Only relevant while plugged in: charge status (AC or DC fast charging), charge voltage target, charger temperature, AC supply voltage, and what current the charger/cable are offering. |
@@ -43,6 +44,14 @@ Bars and gauges are color-coded: green/normal, amber/caution, red only for a gen
 **Odometer and trip.** The VCU has no distance counter, so the dash keeps its own. It's saved every 0.25 mi and a few seconds after you stop, so switching off loses nothing. **Long-press the trip readout to reset it.** The odometer can be corrected from the WiFi config page.
 
 **Efficiency and range.** The TRIP caption shows the trip's energy use in Wh/mi. The **RANGE** card estimates miles to empty: current SOC × the VCU's battery capacity (`BattCap`) ÷ your average Wh/mi over roughly the last 10 miles. It shows a dash until enough distance has been driven to give a meaningful number. Charging time and time parked with the VCU switched on don't count, so they won't skew the figure.
+
+### Incline (pitch and roll)
+
+The left panel shows **pitch** (side view: NOSE UP / NOSE DOWN), the right panel **roll** (seen from behind: LEANING LEFT / LEANING RIGHT). The number turns amber at 75% of the High Pitch / High Roll warning thresholds and red at them; set those in Settings › Warning Thresholds. They're a reminder you choose, not a safe-angle or rollover limit: the IMU reads to roughly ±1–2°, and only you know what your truck and load will tolerate.
+
+- Before first use, level the IMU in **Settings › Calibration › IMU level**, parked on level ground. Until then the screen just asks you to. If the spot wasn't level, every reading is off by that slope.
+- While you're moving, the dash subtracts the truck's own acceleration (from road speed) and cornering (speed × turn rate), so speeding up or turning doesn't read as a hill. **UNCORRECTED** at the top of a panel means the truck seems to be moving (turning or accelerating) but there's no road speed to correct with (no CAN and no GPS fix), so the reading can be off until it settles. It stays hidden while parked.
+- Expect the most accurate readings at trail speeds. Hard braking or sharp turns at speed can still throw it briefly.
 
 ### Editing on the Drive screen
 
@@ -88,7 +97,7 @@ Reached via the Settings dock icon. The first page is a list of sections; tap on
 
 ### Warning Thresholds
 
-Low SOC (%), high motor temperature, high heatsink (inverter) temperature, and low pack voltage. Adjust each with the large +/- buttons (press and hold to speed up). Changes only take effect after pressing **Save**; the Save button highlights when you have unsaved changes. **Defaults** restores and saves the factory values straight away.
+Low SOC (%), high motor temperature, high heatsink (inverter) temperature, low pack voltage, and high pitch / high roll (°, for the Incline screen). Adjust each with the large +/- buttons (press and hold to speed up). Changes only take effect after pressing **Save**; the Save button highlights when you have unsaved changes. **Defaults** restores and saves the factory values straight away.
 
 There's also a **Low 12V Shutdown** toggle here, which applies immediately. Turn it off if your vehicle doesn't have a working 12V sensor wired up, since a missing sensor otherwise looks identical to a real dying battery.
 

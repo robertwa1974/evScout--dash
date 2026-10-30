@@ -53,6 +53,7 @@ void ui_destroy(void)
 {
     ui_speedScreen_screen_destroy();
     ui_driveScreen_screen_destroy();
+    ui_inclineScreen_screen_destroy();
     ui_statusScreen_screen_destroy();
     ui_batteryScreen_screen_destroy();
     ui_chargingScreen_screen_destroy();

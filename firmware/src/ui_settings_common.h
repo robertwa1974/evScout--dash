@@ -28,6 +28,9 @@ lv_obj_t *ui_settings_create_stepper_row(lv_obj_t *section, const char *title,
 // see ui_settingsScreen.cpp for why lv_menu needs this.
 void ui_settings_style_row(lv_obj_t *row);
 void ui_settings_style_section(lv_obj_t *section);
+// "Saved"-style confirmation: an lv_msgbox with one large OK button that
+// closes it. LVGL 8's msgbox buttons don't close the box by themselves.
+void ui_settings_show_saved(const char *text);
 
 // Each sub-page module's lifecycle, driven by ui_settingsScreen.cpp:
 //   *_create_page(menu)   build the page(s) once, at screen init
@@ -59,6 +62,13 @@ void ui_settingsSpeedCal_build(lv_obj_t *page, lv_obj_t *section);
 void ui_settingsSpeedCal_page_leave(lv_obj_t *page);
 void ui_settingsSpeedCal_page_enter(lv_obj_t *page);
 void ui_settingsSpeedCal_refresh_theme(void);
+
+// IMU mount-level calibration rows (ui_settingsImuCal.cpp, 2026-10-28) -
+// its own section on the Calibration page, same build(page, section) shape.
+void ui_settingsImuCal_build(lv_obj_t *page, lv_obj_t *section);
+void ui_settingsImuCal_page_leave(lv_obj_t *page);
+void ui_settingsImuCal_page_enter(lv_obj_t *page);
+void ui_settingsImuCal_refresh_theme(void);
 
 lv_obj_t *ui_settingsLogging_create_page(lv_obj_t *menu);
 void ui_settingsLogging_page_leave(lv_obj_t *page);

@@ -20,7 +20,8 @@
 //        wifi_config_server.h: a local-only AP + web page for editing
 //        vehicle_config.h's values without a reflash).
 //     3. CALIBRATION - road-speed calibration (2026-10-24, built in
-//        ui_settingsSpeedCal.cpp) plus a disabled entry point for the dyno
+//        ui_settingsSpeedCal.cpp), IMU level (2026-10-28,
+//        ui_settingsImuCal.cpp) plus a disabled entry point for the dyno
 //        drivetrain-calibration workflow (still a stub - the dyno LIVE/
 //        RESULTS screens are built, the calibration math isn't).
 //     4-7. VCU PARAMETERS / DIAGNOSTICS / CAN MONITOR / DATA LOGGING
@@ -72,6 +73,7 @@ static lv_obj_t * calPage = NULL;
 static lv_obj_t * thSection = NULL;
 static lv_obj_t * dispSection = NULL;
 static lv_obj_t * calSection = NULL;
+static lv_obj_t * imuSection = NULL;  // IMU level rows (ui_settingsImuCal.cpp), own section on calPage
 static lv_obj_t * fwRow = NULL;
 
 // Warning-threshold spinboxes - read back on Save, written on Default.
@@ -79,6 +81,8 @@ static lv_obj_t * socSpinbox = NULL;
 static lv_obj_t * motorTSpinbox = NULL;
 static lv_obj_t * heatsinkTSpinbox = NULL;
 static lv_obj_t * packVSpinbox = NULL;
+static lv_obj_t * pitchSpinbox = NULL;
+static lv_obj_t * rollSpinbox = NULL;
 
 static lv_obj_t * saveBtn = NULL;
 static lv_obj_t * saveBtnLabel = NULL;
@@ -174,11 +178,13 @@ static void notifyPageModules(lv_obj_t *page) {
     ui_settingsLogging_page_leave(page);
     ui_settingsCanMonitor_page_leave(page);
     ui_settingsSpeedCal_page_leave(page);
+    ui_settingsImuCal_page_leave(page);
     ui_settingsVcuParams_page_enter(page);
     ui_settingsDiagnostics_page_enter(page);
     ui_settingsLogging_page_enter(page);
     ui_settingsCanMonitor_page_enter(page);
     ui_settingsSpeedCal_page_enter(page);
+    ui_settingsImuCal_page_enter(page);
 }
 
 static void menuPageChangedCb(lv_event_t *e) {
@@ -332,6 +338,20 @@ void ui_settings_style_section(lv_obj_t *section) {
     for (uint32_t i = 0; i < n; i++) ui_settings_style_row(lv_obj_get_child(section, i));
 }
 
+static void savedMsgboxCb(lv_event_t *e) {
+    lv_obj_t *btns = lv_event_get_target(e);
+    lv_msgbox_close(lv_obj_get_parent(btns));
+}
+
+void ui_settings_show_saved(const char *text) {
+    static const char *btns[] = {"OK", ""};
+    lv_obj_t *mbox = lv_msgbox_create(NULL, "Saved", text, btns, false);
+    lv_obj_t *btnm = lv_msgbox_get_btns(mbox);
+    lv_obj_set_size(btnm, 200, STEPPER_BTN);  // 80px touch target, not the default thin button
+    lv_obj_add_event_cb(btnm, savedMsgboxCb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_center(mbox);
+}
+
 static void saveBtnCb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED || !settingsDirty) return;
 
@@ -339,14 +359,14 @@ static void saveBtnCb(lv_event_t *e) {
     warningSet.motorTemp    = lv_spinbox_get_value(motorTSpinbox);
     warningSet.heatsinkTemp = lv_spinbox_get_value(heatsinkTSpinbox);
     warningSet.packVLow     = lv_spinbox_get_value(packVSpinbox) / 10.0f;  // spinbox stores deciVolts
+    warningSet.pitchDeg     = lv_spinbox_get_value(pitchSpinbox);
+    warningSet.rollDeg      = lv_spinbox_get_value(rollSpinbox);
     updateWarningsSet();
 
     settingsDirty = false;
     updateSaveButtonState();
 
-    static const char *btns[] = {"OK", ""};
-    lv_obj_t *mbox = lv_msgbox_create(NULL, "Saved", "Warning thresholds saved.", btns, true);
-    lv_obj_center(mbox);
+    ui_settings_show_saved("Warning thresholds saved.");
 }
 
 static void lowVoltShutdownSwitchCb(lv_event_t *e) {
@@ -363,6 +383,8 @@ static void defaultBtnCb(lv_event_t *e) {
     lv_spinbox_set_value(motorTSpinbox, warningSet.motorTemp);
     lv_spinbox_set_value(heatsinkTSpinbox, warningSet.heatsinkTemp);
     lv_spinbox_set_value(packVSpinbox, (int32_t)(warningSet.packVLow * 10));
+    lv_spinbox_set_value(pitchSpinbox, warningSet.pitchDeg);
+    lv_spinbox_set_value(rollSpinbox, warningSet.rollDeg);
 
     settingsDirty = false;  // setDefaultWarnSet() already persisted
     updateSaveButtonState();
@@ -492,7 +514,12 @@ void ui_settingsScreen_screen_init(void)
     wireThresholdRow(socSpinbox);
     wireThresholdRow(motorTSpinbox);
     wireThresholdRow(heatsinkTSpinbox);
+    // Incline screen warning angles - amber from 75%, red at the value.
+    pitchSpinbox = ui_settings_create_stepper_row(thSection, "High Pitch (Â°)", 5, 45, warningSet.pitchDeg, 2, 0);
+    rollSpinbox = ui_settings_create_stepper_row(thSection, "High Roll (Â°)", 5, 45, warningSet.rollDeg, 2, 0);
     wireThresholdRow(packVSpinbox);
+    wireThresholdRow(pitchSpinbox);
+    wireThresholdRow(rollSpinbox);
 
     // Applies + persists immediately (like Day/Night below), not part of
     // the numeric-threshold Save flow above it - see zombie_updaters.h's
@@ -646,6 +673,9 @@ void ui_settingsScreen_screen_init(void)
     lv_label_set_text(calBtnLabel, "Not built yet");
     lv_obj_center(calBtnLabel);
 
+    imuSection = lv_menu_section_create(calPage);
+    ui_settingsImuCal_build(calPage, imuSection);    // IMU mount-level calibration (2026-10-28)
+
     // --- VCU Parameters / Diagnostics / Data Logging pages (2026-10-21) ---
     lv_obj_t *vcuParamsPage = ui_settingsVcuParams_create_page(menu);
     lv_obj_t *diagPage = ui_settingsDiagnostics_create_page(menu);
@@ -688,6 +718,7 @@ void ui_settingsScreen_screen_init(void)
     ui_settings_style_section(thSection);
     ui_settings_style_section(dispSection);
     ui_settings_style_section(calSection);
+    ui_settings_style_section(imuSection);
     ui_settings_style_row(fwRow);
 
     lv_menu_set_page(menu, settingsPage);
@@ -770,8 +801,8 @@ void ui_settingsScreen_refresh_theme(void)
     lv_obj_set_style_bg_color(ui_settingsScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     if (menu) lv_obj_set_style_bg_color(menu, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    lv_obj_t *spinboxes[] = { socSpinbox, motorTSpinbox, heatsinkTSpinbox, packVSpinbox, utcOffsetSpinbox };
-    for (int i = 0; i < 5; i++) {
+    lv_obj_t *spinboxes[] = { socSpinbox, motorTSpinbox, heatsinkTSpinbox, packVSpinbox, pitchSpinbox, rollSpinbox, utcOffsetSpinbox };
+    for (int i = 0; i < 7; i++) {
         if (!spinboxes[i]) continue;
         lv_obj_set_style_bg_color(spinboxes[i], ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_text_color(spinboxes[i], ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -803,6 +834,7 @@ void ui_settingsScreen_refresh_theme(void)
     ui_settings_style_section(thSection);
     ui_settings_style_section(dispSection);
     ui_settings_style_section(calSection);
+    ui_settings_style_section(imuSection);
     ui_settings_style_row(fwRow);
     if (menu) {
         lv_obj_t *menuHeader = lv_menu_get_main_header(menu);
@@ -828,6 +860,7 @@ void ui_settingsScreen_refresh_theme(void)
     ui_settingsLogging_refresh_theme();
     ui_settingsCanMonitor_refresh_theme();
     ui_settingsSpeedCal_refresh_theme();
+    ui_settingsImuCal_refresh_theme();
     ui_dock_refresh_theme(ui_settingsScreenDock, UI_DOCK_SETTINGS);
     // Section header labels, row title labels, and the +/-/default/cal
     // button chrome are left as their creation-time colors here - this
@@ -851,11 +884,14 @@ void ui_settingsScreen_screen_destroy(void)
     thSection = NULL;
     dispSection = NULL;
     calSection = NULL;
+    imuSection = NULL;
     fwRow = NULL;
     socSpinbox = NULL;
     motorTSpinbox = NULL;
     heatsinkTSpinbox = NULL;
     packVSpinbox = NULL;
+    pitchSpinbox = NULL;
+    rollSpinbox = NULL;
     utcOffsetSpinbox = NULL;
     saveBtn = NULL;
     saveBtnLabel = NULL;

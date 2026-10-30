@@ -13,8 +13,9 @@ forked from.
   (GPS-calibratable); trip, recent and lifetime Wh/mi drive the range
   estimate.
 - **Telemetry screens** — Drive (with tap-to-edit gear, motor mode, regen
-  limit and brake regen, mirroring the Zombieverter Dial), Status, Battery
-  (cell-level), Charging, GPS.
+  limit and brake regen, mirroring the Zombieverter Dial), Incline (pitch
+  and roll from the IMU, corrected for acceleration and cornering), Status,
+  Battery (cell-level), Charging, GPS.
 - **Navigation** — GPS NAV with offline vector map tiles and routing to
   Home / Work / the nearest charging station (offline datasets on the SD
   card).

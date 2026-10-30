@@ -23,7 +23,8 @@
 // Bound to myData in zombie_updaters.cpp's fastUpdate/midUpdate/slowUpdate
 // (same dirty-check, dataMutex-then-uiMutex pattern as every other binding).
 //
-// Navigation: physical swipe LEFT -> Drive (back). Physical swipe RIGHT
+// Navigation: physical swipe LEFT -> Incline (back - was Drive until the
+// Incline screen went in between, 2026-10-29). Physical swipe RIGHT
 // used to go to Battery - REMOVED (styling/UX pass Phase 5, 2026-09-18),
 // that was a cross-group link, Battery/BMS is dock-only now (see
 // ui_dock.h's mapping comment and the plan's swipe-removal table) -
@@ -91,7 +92,7 @@ void ui_event_statusScreen(lv_event_t * e)
 
     if (event_code == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_get_act()) == LV_DIR_RIGHT) {
         lv_indev_wait_release(lv_indev_get_act());
-        _ui_screen_change(&ui_driveScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_driveScreen_screen_init);
+        _ui_screen_change(&ui_inclineScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_inclineScreen_screen_init);
         _ui_screen_delete(&ui_statusScreen);
     }
     // Retargeted to Charging, was Battery - see this file's header comment

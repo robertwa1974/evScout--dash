@@ -43,8 +43,8 @@ void setup(void) {
 
   mutex_init();
   lcd_panel_start();  // brings up I2C_NUM_0 (GPIO8/9) - imu_init() needs this done first
-  imu_init();          // MPU6050 wake + WHO_AM_I check - false is fine, just means not wired yet
-  imu_start_sampling();
+  imu_begin();         // MPU6050 config + saved level calibration + 100Hz task -
+                        // false is fine, just means not wired yet
   bool sdOk = sd_init();  // mount microSD (SPI bus GPIO11/12/13, CS via CH422G) -
                            // false is fine, just means no card inserted yet;
                            // check sd_available() before any future file I/O

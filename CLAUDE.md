@@ -12,8 +12,8 @@ PlatformIO. Full architecture and build-issue history: see
 `scout80-dash-architecture.md` and `waveshare-dash-build.md` in the repo
 root — read both before touching CAN/SDO code or the build config.
 
-Twelve screens: Splash/Clock (logo + UTC digital clock), Settings, Speed
-(home), Drive, Status, Battery, Charging, GPS (telemetry-only, see below),
+Thirteen screens: Splash/Clock (logo + UTC digital clock), Settings, Speed
+(home), Drive, Incline (pitch/roll, added 2026-10-29), Status, Battery, Charging, GPS (telemetry-only, see below),
 GPS NAV (breadcrumb trail, see below), Destinations (Home/Work/nearest
 charging station picker, see below), 0-60/virtual dyno (LIVE + RESULTS).
 GPS navigation as originally envisioned (full offline tile map) is still
@@ -33,7 +33,7 @@ much map-canvas real estate — see "Screen layout conventions" below and
 `waveshare-dash-build.md`'s milestone entries for why.)
 
 Current topology: `Splash/Clock <-> Settings <-> Speed(home) <-> Drive <->
-Status <-> Battery <-> Charging <-> GPS <-> GPS NAV <-> Destinations <->
+Incline <-> Status <-> Battery <-> Charging <-> GPS <-> GPS NAV <-> Destinations <->
 Dyno LIVE -> Dyno RESULTS`.
 
 ## GPS data source (mock vs. real)
@@ -218,6 +218,29 @@ code:
   `ui_param_editor.h`'s full-screen editor — the only place display cards
   double as inputs; their titles carry `LV_SYMBOL_EDIT` to say so. Live
   SDO writes, not saved to VCU flash, same as the Dial.
+- **Incline** (2026-10-29, `ui_inclineScreen.cpp`): two 388x392 panels,
+  PITCH (side view) and ROLL (end-on view, from the front render but
+  angled as seen from behind - driver's left on screen left), each a
+  rotated `lv_img` over an `lv_meter` used only for its +-45 deg tick scale
+  and amber/red zone arcs (no meter needle - it would cut through the
+  truck; the pointer is a short `lv_line` at the arc). Artwork: "D2"
+  wireframes (bright outline = text primary, dimmer details = text
+  secondary) hand-traced as vector shapes in
+  `firmware/assets/convert_incline_art.py` (coordinates measured off
+  renders of the real truck in `incline_src/`, git-ignored - an automatic
+  edge trace of the renders was tried and rejected as ragged), packed as
+  two-tone coverage masks and expanded at runtime into PSRAM
+  TRUE_COLOR_ALPHA buffers in the current palette - LVGL 8.4 can't rotate
+  A8/indexed images. Degrees, magnitude
+  + NOSE UP/DOWN, LEANING LEFT/RIGHT caption. Zones: amber from 75% of
+  `warningSet.pitchDeg`/`rollDeg` (Settings › Warning Thresholds), red at
+  them - user-tuned reminders, never presented as rollover limits. Data is
+  `imu_get_attitude()`: a complementary filter in the IMU task (gyro short
+  term, gravity long term) that subtracts d(road speed)/dt and speed × yaw
+  rate first - without that, a launch reads as a climb and a turn as body
+  roll. "UNCORRECTED" tag only when there's no speed source AND the IMU
+  itself sees motion (rotation / |a| off 1g, 3 s hold). Uncalibrated IMU ->
+  empty state, never raw axes (same rule as Settings › IMU level).
 - **Status**: 2x3 grid of static/at-rest telemetry: SOC (`lv_arc`, scaled
   down to fit a grid cell — smaller than Battery's ring but the same
   arc-containment rule applies), Pack Voltage, Aux/12V Voltage, Motor
@@ -492,7 +515,14 @@ numeral. A secondary live speed/acceleration readout. A state badge
 - Use `lv_menu` with `lv_menu_section` groups, three sections: **(1)
   Warning Thresholds** (low SOC, high motor temp, low pack voltage),
   **(2) Display** (day/night, brightness), **(3) Calibration** (dyno
-  drivetrain-efficiency workflow entry point). Added 2026-10-21, each in
+  drivetrain-efficiency workflow entry point; also hosts road-speed
+  calibration and, since 2026-10-28, **IMU level** —
+  `ui_settingsImuCal.cpp` over `imu_driver.h`: a parked 2 s average
+  defines the vehicle frame (fwd/left/up) from whatever way the board is
+  mounted, so never hard-code an IMU axis mapping; consumers use
+  `imu_get_vehicle_accel()` and, when it's `!valid`, must never fall back
+  to raw chip axes — fall back to speed-derived acceleration instead (and
+  say so on screen), so the feature stays usable uncalibrated). Added 2026-10-21, each in
   its own file via `ui_settings_common.h`: **(4) VCU Parameters**
   (`ui_settingsVcuParams.cpp` — read/write a curated list of ZombieVerter
   tunables over SDO + "save to VCU flash"), **(5) Diagnostics**
@@ -590,7 +620,8 @@ is physically a rightward swipe (confirmed working navigation prior to the
 settings → main → BMS → dyno LIVE; physical LEFT goes back — the split
 preserved this same convention across the current topology: splash/clock →
 settings → Speed (home) → Drive → Status → Battery → Charging → GPS →
-GPS NAV → Destinations → dyno LIVE → dyno RESULTS). Each
+GPS NAV → Destinations → dyno LIVE → dyno RESULTS; Incline sits between
+Drive and Status since 2026-10-29). Each
 screen's header comment states the *physical* direction, not
 the `LV_DIR_*` constant name, to avoid re-confusing this — read the code's
 `LV_DIR_LEFT`/`LV_DIR_RIGHT` checks with this inversion in mind, don't
