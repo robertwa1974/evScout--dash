@@ -219,8 +219,9 @@ code:
   double as inputs; their titles carry `LV_SYMBOL_EDIT` to say so. Live
   SDO writes, not saved to VCU flash, same as the Dial.
 - **Incline** (2026-10-29, `ui_inclineScreen.cpp`): two 388x392 panels,
-  PITCH (side view) and ROLL (end-on view, from the front render but
-  angled as seen from behind - driver's left on screen left), each a
+  PITCH (side view) and ROLL (rear view - driver's left on screen left;
+  a front view was tried first and read as leaning the wrong way, since
+  from the front the sides are mirrored), each a
   rotated `lv_img` over an `lv_meter` used only for its +-45 deg tick scale
   and amber/red zone arcs (no meter needle - it would cut through the
   truck; the pointer is a short `lv_line` at the arc). Artwork: "D2"

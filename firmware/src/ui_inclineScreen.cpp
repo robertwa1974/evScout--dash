@@ -3,10 +3,11 @@
 // ============================================================================
 // Hand-written (2026-10-29). Two side-by-side 388x392 panels above the dock:
 //   left  PITCH - Scout side view (nose right), tilts with pitch
-//   right ROLL  - Scout end-on view, tilts with roll. Drawn from the FRONT
-//                 render (the truck is near-symmetric end-on), but the angle
-//                 is applied as if seen from behind: the driver's left is on
-//                 screen left, so LEANING LEFT tips the picture left.
+//   right ROLL  - Scout rear view, tilts with roll. Seen from behind, the
+//                 driver's left is on screen left, so LEANING LEFT tips the
+//                 picture left. (Was a front view until 2026-10-30: the
+//                 picture then read as leaning the opposite way to the
+//                 caption, since from the front the sides are mirrored.)
 // Each: an lv_meter used for its +-45 degree tick scale and amber/red zone
 // arcs only (labels rewritten to absolute values in a draw-part callback) -
 // no meter needle, since a needle from the centre would cut through the
@@ -84,7 +85,7 @@ typedef struct {
 lv_obj_t * ui_inclineScreen = NULL;
 
 static art_t sideArt = { incline_side_mask, INCLINE_SIDE_W, INCLINE_SIDE_H, NULL, {} };
-static art_t frontArt = { incline_front_mask, INCLINE_FRONT_W, INCLINE_FRONT_H, NULL, {} };
+static art_t rearArt = { incline_rear_mask, INCLINE_REAR_W, INCLINE_REAR_H, NULL, {} };
 static gauge_t pitchG, rollG;
 static lv_obj_t *emptyNoImu = NULL, *emptyUncal = NULL;
 static lv_obj_t *ui_inclineScreenDock = NULL;
@@ -352,7 +353,7 @@ void ui_inclineScreen_screen_init(void)
     lv_obj_set_style_bg_opa(ui_inclineScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     buildGauge(&pitchG, GRID_GAP, "PITCH", &sideArt);
-    buildGauge(&rollG, GRID_GAP * 2 + PANEL_W, "ROLL", &frontArt);
+    buildGauge(&rollG, GRID_GAP * 2 + PANEL_W, "ROLL", &rearArt);
     drawGauge(&pitchG, 0);
     drawGauge(&rollG, 0);
     setZones(&pitchG, clampWarn(warningSet.pitchDeg));

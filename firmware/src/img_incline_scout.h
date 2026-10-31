@@ -13,9 +13,9 @@ extern "C" {
 #define INCLINE_SIDE_H 88
 extern const uint8_t incline_side_mask[INCLINE_SIDE_W * INCLINE_SIDE_H];
 
-#define INCLINE_FRONT_W 124
-#define INCLINE_FRONT_H 116
-extern const uint8_t incline_front_mask[INCLINE_FRONT_W * INCLINE_FRONT_H];
+#define INCLINE_REAR_W 124
+#define INCLINE_REAR_H 127
+extern const uint8_t incline_rear_mask[INCLINE_REAR_W * INCLINE_REAR_H];
 
 #ifdef __cplusplus
 }

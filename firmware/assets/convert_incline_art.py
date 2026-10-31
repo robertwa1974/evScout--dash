@@ -3,14 +3,14 @@
 convert_incline_art.py - Incline screen Scout wireframes (2026-10-29)
 
 Draws the two Incline screen views of the truck - side (nose right) and
-end-on (front) - as clean line art, and writes them as compact two-tone
+rear (driver's left on screen left, matching how roll is applied) - as clean line art, and writes them as compact two-tone
 coverage masks compiled into the firmware (firmware/src/img_incline_scout.c/.h).
 Style "D2": silhouette, tyres and bumpers in the OUTLINE tone (bright),
 windows, grille, lights, rims, door etc. in the DETAIL tone (dimmer).
 
 The shapes are hand-traced: every coordinate below was measured off a grid
 laid over renders of the actual truck (incline_src/scout_side.png and
-scout_front.png - kept out of git), in those renders' pixel space. Nothing
+scout_rear.png - kept out of git), in those renders' pixel space. Nothing
 is copied from the renders' pixels; they're only the measuring reference.
 An automatic edge-trace of the renders was tried first and rejected - rust,
 grime and reflections turned into broken lines and specks.
@@ -29,7 +29,7 @@ Usage: python convert_incline_art.py [--preview]
 --preview also writes incline_art_preview.png (day + night, a few angles).
 Needs Pillow + numpy.
 
-Editing shapes: add/move points in side()/front() (render coordinates), run
+Editing shapes: add/move points in side()/rear() (render coordinates), run
 with --preview, check the preview, then rebuild. Line weights are WIDTHS.
 """
 import argparse
@@ -94,32 +94,34 @@ def side():
     }
 
 
-def front():
-    body = [(640, 368), (1260, 368), (1298, 398), (1312, 440), (1312, 600), (1300, 645),
-            (600, 645), (588, 600), (588, 440), (602, 398), (640, 368)]
-    cab = [(655, 360), (655, 195), (645, 192), (657, 168), (1243, 168), (1255, 192), (1245, 195), (1245, 360)]
-    tyre_l = [(588, 600), (530, 600), (530, 925)] + arc_pts(568, 927, 38, 180, 90, 6) + \
-             [(664, 965)] + arc_pts(664, 927, 38, 90, 0, 6) + [(702, 690)]
-    tyre_r = [(1208, 690)] + arc_pts(1246, 927, 38, 180, 90, 6) + [(1344, 965)] + \
-             arc_pts(1344, 927, 38, 90, 0, 6) + [(1382, 600), (1312, 600)]
+def rear():
+    # Seen from behind: the driver's left is on screen left, matching how
+    # the Incline screen applies roll (a front view mirrored it - 2026-10-30).
+    body = [(600, 745), (600, 445)] + arc_pts(640, 445, 40, 180, 270, 6) + \
+           arc_pts(1350, 445, 40, 270, 360, 6) + [(1390, 745)]
+    sill_l, sill_r = [(600, 745), (660, 745)], [(1335, 745), (1390, 745)]
+    cab = [(640, 405), (640, 185), (650, 182), (662, 133), (1326, 133), (1338, 182), (1348, 185), (1348, 405)]
+    tyre_l = [(600, 630), (572, 630), (572, 925)] + arc_pts(610, 927, 38, 180, 90, 6) + \
+             [(689, 965)] + arc_pts(689, 927, 38, 90, 0, 6) + [(727, 750)]
+    tyre_r = [(1225, 750)] + arc_pts(1263, 927, 38, 180, 90, 6) + [(1362, 965)] + \
+             arc_pts(1362, 927, 38, 90, 0, 6) + [(1400, 630), (1390, 630)]
     return {
-        "outline": [body, cab, tyre_l, tyre_r, rrect(640, 645, 1300, 690, 6)],  # + bumper
+        "outline": [body, sill_l, sill_r, cab, tyre_l, tyre_r, rrect(660, 710, 1335, 750, 6)],  # + bumper
         "detail": [
-            rrect(672, 210, 1228, 345, 8),                                     # windshield
-            rrect(568, 338, 600, 388, 5), rrect(1292, 338, 1324, 388, 5),      # mirrors
-            [(600, 362), (655, 356)], [(1245, 356), (1292, 362)],
-            rrect(760, 462, 1162, 562, 10),                                    # grille
-            rrect(640, 468, 746, 565, 12), rrect(1178, 468, 1282, 565, 12),    # headlight bezels
-            circle(693, 516, 38), circle(1230, 516, 38),                       # headlights
-            circle(902, 496, 32), circle(1030, 496, 32),                       # driving lights
-            [(775, 690), (790, 600), (1130, 600), (1148, 690)],                # push-bar hoop
-            rrect(665, 618, 728, 640, 3), rrect(1195, 618, 1258, 640, 3),      # turn signals
-            [(702, 770), (1208, 770)], circle(880, 790, 38),                   # axle + diff
+            [(745, 185), (745, 405)], [(1245, 185), (1245, 405)],             # liftgate seams
+            rrect(778, 207, 1212, 348, 20),                                    # rear window
+            [(965, 373), (1025, 373)],                                         # liftgate handle
+            [(738, 133), (738, 116), (1232, 116), (1232, 133)],                # roof rack
+            rrect(606, 355, 636, 405, 5), rrect(1354, 355, 1384, 405, 5),      # mirrors
+            rrect(748, 405, 1243, 710, 6), rrect(758, 445, 1233, 665, 6),      # tailgate + panel
+            circle(673, 478, 38), circle(1317, 478, 38),                       # taillights
+            circle(684, 665, 22), circle(1307, 663, 22),                       # reflectors
+            [(727, 780), (1225, 780)], circle(965, 790, 35),                   # axle + diff
         ],
     }
 
 
-VIEWS = [("side", side, 180), ("front", front, 120)]   # name, shapes, drawing width (px)
+VIEWS = [("side", side, 180), ("rear", rear, 120)]   # name, shapes, drawing width (px)
 
 
 # --- rasterise -------------------------------------------------------------------
@@ -191,7 +193,7 @@ def write_preview(results):
     cell = 240
     canvas = Image.new("RGB", (cell * len(angles) * 2, cell * len(themes)))
     for ti, (panel, prim, sec) in enumerate(themes):
-        for vi, name in enumerate(["side", "front"]):
+        for vi, name in enumerate(["side", "rear"]):
             img = expand(results[name][2], hexrgb(prim), hexrgb(sec))
             for ai, ang in enumerate(angles):
                 tile = Image.new("RGB", (cell, cell), hexrgb(panel))
