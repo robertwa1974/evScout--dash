@@ -31,14 +31,15 @@
 // zombie_updaters.cpp rather than a per-visit "on show" hook - this
 // codebase's screens are created once and never destroyed).
 //
-// Layout: Home and Work stay fixed at the top (784x124 each, same
-// GRID_PANEL_H=124 this project's 2x3 grid screens already use). Five
-// charging-station rows don't fit in the remaining fixed height alongside
-// them, so they live in a SCROLLABLE container below Work instead (same
+// Layout (reworked 2026-11-01 - stacked 784x124 Home/Work left the list a
+// 128px window, under one full row): Home and Work are two 388x92 cards
+// side by side at the top, then a fixed "nearest stations" header, then
+// the five charging rows in a SCROLLABLE container filling the rest (same
 // "content taller than viewport, drag to see more" pattern
 // ui_settingsScreen.cpp's lv_menu already uses, just a plain lv_obj here
-// rather than lv_menu - this is a flat list, not a sectioned menu). The
-// dock stays a sibling of the scroll container, not a child, so it's
+// rather than lv_menu - this is a flat list, not a sectioned menu). About
+// 2.9 rows show at once - the cut-off third row is what says it scrolls.
+// The dock stays a sibling of the scroll container, not a child, so it's
 // fixed at the bottom regardless of scroll position - same convention
 // ui_settingsScreen.cpp's dock placement already established.
 //
@@ -64,8 +65,11 @@
 lv_obj_t * ui_destinationsScreen = NULL;
 
 #define ROW_W (800 - 2 * GRID_GAP)
-#define ROW_H GRID_PANEL_H     // 124px - Home/Work, matches this project's existing grid row height
-#define CHG_ROW_H 100          // denser rows for the scrollable 5-item list - matches ui_settingsScreen.cpp's ROW_HEIGHT
+#define CARD_H 92              // Home/Work, side by side, GRID_PANEL_W wide
+#define CHG_ROW_H 84           // scrollable 5-item list - keep >= the 80px touch minimum
+#define ROW_PAD 10             // inside padding; 16 doesn't leave room for two lines in 84px
+#define CHEVRON_W 36           // space reserved so a long station name can't reach the chevron
+#define HEADER_H 28
 
 // DEST_CHARGE_0..DEST_CHARGE_4 must stay contiguous and in this order -
 // destRowClickedCb() derives the nearestStations[] index as id - DEST_CHARGE_0.
@@ -76,6 +80,9 @@ typedef enum {
 
 static lv_obj_t * homeDetailLabel = NULL;
 static lv_obj_t * workDetailLabel = NULL;
+static lv_obj_t * homeRow = NULL;
+static lv_obj_t * workRow = NULL;
+static lv_obj_t * chargeHeader = NULL;
 static lv_obj_t * chargeScroll = NULL;
 static lv_obj_t * chargeTitleLabel[CHG_MAX_NEAREST] = { NULL };
 static lv_obj_t * chargeDetailLabel[CHG_MAX_NEAREST] = { NULL };
@@ -170,20 +177,23 @@ static void destRowClickedCb(lv_event_t * e) {
     _ui_screen_change(&ui_navScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 500, 0, &ui_navScreen_screen_init);
 }
 
-static lv_obj_t *createDestRow(lv_obj_t *parent, int16_t y, int16_t h, const char *titleText,
+static lv_obj_t *createDestRow(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, int16_t h, const char *titleText,
                                 lv_obj_t **outTitleLabel, lv_obj_t **outDetailLabel, dest_id_t id) {
     lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_set_pos(row, GRID_GAP, y);
-    lv_obj_set_size(row, ROW_W, h);
+    lv_obj_set_pos(row, x, y);
+    lv_obj_set_size(row, w, h);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(row, 12, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(row, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(row, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(row, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(row, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_all(row, 16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(row, ROW_PAD, LV_PART_MAIN | LV_STATE_DEFAULT);
+    int16_t textW = w - 2 * (ROW_PAD + 2) - CHEVRON_W;  // 2 = border
 
     lv_obj_t *titleLabel = lv_label_create(row);
+    lv_label_set_long_mode(titleLabel, LV_LABEL_LONG_DOT);  // names run up to 39 chars
+    lv_obj_set_width(titleLabel, textW);
     lv_label_set_text(titleLabel, titleText);
     lv_obj_set_style_text_color(titleLabel, ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(titleLabel, &font_montserrat_semibold_24, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -191,6 +201,8 @@ static lv_obj_t *createDestRow(lv_obj_t *parent, int16_t y, int16_t h, const cha
     if (outTitleLabel) *outTitleLabel = titleLabel;
 
     lv_obj_t *detailLabel = lv_label_create(row);
+    lv_label_set_long_mode(detailLabel, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(detailLabel, textW);
     lv_label_set_text(detailLabel, "--");
     lv_obj_set_style_text_color(detailLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(detailLabel, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -216,13 +228,21 @@ void ui_destinationsScreen_screen_init(void)
     lv_obj_set_style_bg_color(ui_destinationsScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_destinationsScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    createDestRow(ui_destinationsScreen, GRID_GAP, ROW_H,
-                  LV_SYMBOL_HOME " HOME", NULL, &homeDetailLabel, DEST_HOME);
-    createDestRow(ui_destinationsScreen, GRID_GAP * 2 + ROW_H, ROW_H,
-                  LV_SYMBOL_DIRECTORY " WORK", NULL, &workDetailLabel, DEST_WORK);
+    homeRow = createDestRow(ui_destinationsScreen, GRID_GAP, GRID_GAP, GRID_PANEL_W, CARD_H,
+                            LV_SYMBOL_HOME " HOME", NULL, &homeDetailLabel, DEST_HOME);
+    workRow = createDestRow(ui_destinationsScreen, GRID_GAP * 2 + GRID_PANEL_W, GRID_GAP, GRID_PANEL_W, CARD_H,
+                            LV_SYMBOL_DIRECTORY " WORK", NULL, &workDetailLabel, DEST_WORK);
+
+    // Outside the scroll container so it stays put while the list moves.
+    int16_t headerY = GRID_GAP * 2 + CARD_H;
+    chargeHeader = lv_label_create(ui_destinationsScreen);
+    lv_label_set_text(chargeHeader, LV_SYMBOL_CHARGE " NEAREST CHARGING STATIONS");
+    lv_obj_set_style_text_color(chargeHeader, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(chargeHeader, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_pos(chargeHeader, GRID_GAP, headerY);
 
     // --- Scrollable "nearest 5 charging stations" list below Home/Work ---
-    int16_t scrollY = GRID_GAP * 3 + ROW_H * 2;
+    int16_t scrollY = headerY + HEADER_H;
     int16_t scrollH = (480 - UI_DOCK_H) - scrollY - GRID_GAP;
     chargeScroll = lv_obj_create(ui_destinationsScreen);
     lv_obj_set_pos(chargeScroll, 0, scrollY);
@@ -233,15 +253,9 @@ void ui_destinationsScreen_screen_init(void)
     lv_obj_set_scroll_dir(chargeScroll, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(chargeScroll, LV_SCROLLBAR_MODE_AUTO);
 
-    lv_obj_t *chargeHeader = lv_label_create(chargeScroll);
-    lv_label_set_text(chargeHeader, LV_SYMBOL_CHARGE " NEAREST CHARGING STATIONS");
-    lv_obj_set_style_text_color(chargeHeader, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(chargeHeader, &font_montserrat_semibold_16, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_pos(chargeHeader, GRID_GAP, 0);
-
-    int16_t rowY = 28 + GRID_GAP;
+    int16_t rowY = 0;
     for (int i = 0; i < CHG_MAX_NEAREST; i++) {
-        chargeRow[i] = createDestRow(chargeScroll, rowY, CHG_ROW_H,
+        chargeRow[i] = createDestRow(chargeScroll, GRID_GAP, rowY, ROW_W, CHG_ROW_H,
                                       LV_SYMBOL_CHARGE " --", &chargeTitleLabel[i], &chargeDetailLabel[i],
                                       (dest_id_t)(DEST_CHARGE_0 + i));
         rowY += CHG_ROW_H + GRID_GAP;
@@ -266,29 +280,26 @@ void ui_destinationsScreen_screen_init(void)
     if (gpsData.hasFix) ui_destinationsScreen_updateDistances(gpsData.latitude, gpsData.longitude);
 }
 
+// Children are in createDestRow()'s order: title, detail, chevron.
+static void themeRow(lv_obj_t *row) {
+    if (!row) return;
+    lv_obj_set_style_bg_color(row, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(row, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(lv_obj_get_child(row, 0), ui_theme_text_primary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(lv_obj_get_child(row, 1), ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(lv_obj_get_child(row, 2), ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
+}
+
 void ui_destinationsScreen_refresh_theme(void)
 {
     if (ui_destinationsScreen == NULL) return;
 
     lv_obj_set_style_bg_color(ui_destinationsScreen, ui_theme_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    uint32_t n = lv_obj_get_child_cnt(ui_destinationsScreen);
-    for (uint32_t i = 0; i < n; i++) {
-        lv_obj_t *child = lv_obj_get_child(ui_destinationsScreen, i);
-        if (child == ui_destinationsScreenDock || child == chargeScroll) continue;  // re-themed separately below
-        lv_obj_set_style_bg_color(child, ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_border_color(child, ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    }
-    if (homeDetailLabel) lv_obj_set_style_text_color(homeDetailLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    if (workDetailLabel) lv_obj_set_style_text_color(workDetailLabel, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    for (int i = 0; i < CHG_MAX_NEAREST; i++) {
-        if (chargeRow[i]) {
-            lv_obj_set_style_bg_color(chargeRow[i], ui_theme_panel_bg(), LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_border_color(chargeRow[i], ui_theme_panel_border(), LV_PART_MAIN | LV_STATE_DEFAULT);
-        }
-        if (chargeDetailLabel[i]) lv_obj_set_style_text_color(chargeDetailLabel[i], ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
-    }
+    themeRow(homeRow);
+    themeRow(workRow);
+    for (int i = 0; i < CHG_MAX_NEAREST; i++) themeRow(chargeRow[i]);
+    if (chargeHeader) lv_obj_set_style_text_color(chargeHeader, ui_theme_text_secondary(), LV_PART_MAIN | LV_STATE_DEFAULT);
 
     ui_dock_refresh_theme(ui_destinationsScreenDock, UI_DOCK_GPS);
 }
@@ -300,6 +311,9 @@ void ui_destinationsScreen_screen_destroy(void)
     ui_destinationsScreen = NULL;
     homeDetailLabel = NULL;
     workDetailLabel = NULL;
+    homeRow = NULL;
+    workRow = NULL;
+    chargeHeader = NULL;
     chargeScroll = NULL;
     for (int i = 0; i < CHG_MAX_NEAREST; i++) {
         chargeTitleLabel[i] = NULL;

@@ -443,8 +443,9 @@ story). Key facts, so nobody re-derives them from scratch:
   `panelBg` — a real bug the fixture had been masking since nothing had
   ever rendered it on-screen before).
 - **Destinations** (added 2026-09-22, `ui_destinationsScreen.{h,cpp}`):
-  full-width list of three tappable rows — Home, Work, Nearest Charging
-  Station — replacing GPS NAV's old single on-canvas "HOME" button once
+  Home and Work as two side-by-side tappable cards (2026-11-01, was
+  stacked) over a scrollable list of the five nearest charging stations
+  (~2.9 rows visible) — replacing GPS NAV's old single on-canvas "HOME" button once
   real GPS/IMU hardware bench-testing showed the old button + turn-banner
   combo was confusing and ate too much map-canvas real estate. Home/Work
   are still hardcoded coordinate constants (no address-entry UI, ever —
